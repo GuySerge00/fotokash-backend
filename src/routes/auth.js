@@ -52,7 +52,7 @@ router.post('/signup', async (req, res) => {
     });
   } catch (err) {
     console.error('Erreur inscription :', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    res.status(500).json({ error: 'Erreur serveur.', detail: err.message });
   }
 });
 
