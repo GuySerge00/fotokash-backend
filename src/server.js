@@ -85,6 +85,7 @@ app.use((req, res) => {
 });
 
 // ===== DÉMARRAGE =====
+console.log('ENV VARS:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('PG') || k.includes('NODE')));
 app.listen(PORT, () => {
   console.log(`
   ╔═══════════════════════════════════════════╗
