@@ -1,17 +1,17 @@
 const { Pool } = require('pg');
-require('dotenv').config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: { rejectUnauthorized: false },
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 5000,
 });
 
 pool.on('error', (err) => {
-  console.error('Erreur inattendue sur le pool PostgreSQL', err);
-  process.exit(-1);
+  console.error('Erreur PostgreSQL:', err.message);
 });
+
+console.log('DATABASE_URL present:', !!process.env.DATABASE_URL);
 
 module.exports = { pool };
