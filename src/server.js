@@ -13,11 +13,14 @@ const paymentRoutes = require('./routes/payments');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy (nécessaire sur Railway, Render, etc.)
+app.set('trust proxy', 1);
+
 // ===== SÉCURITÉ =====
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
+  origin: process.env.FRONTEND_URL === '*' ? '*' : (process.env.FRONTEND_URL || 'http://localhost:3000'),
+  credentials: process.env.FRONTEND_URL !== '*',
 }));
 
 // Rate limiting global
