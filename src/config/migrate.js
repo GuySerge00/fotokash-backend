@@ -9,12 +9,11 @@ async function migrate() {
 
     // Extension pgvector pour les empreintes faciales
     await client.query('CREATE EXTENSION IF NOT EXISTS vector');
-    await client.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
 
     // ===== TABLE PHOTOGRAPHERS (photographes) =====
     await client.query(`
       CREATE TABLE IF NOT EXISTS photographers (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         studio_name VARCHAR(255) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
@@ -30,7 +29,7 @@ async function migrate() {
     // ===== TABLE EVENTS (événements) =====
     await client.query(`
       CREATE TABLE IF NOT EXISTS events (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         photographer_id UUID NOT NULL REFERENCES photographers(id) ON DELETE CASCADE,
         name VARCHAR(255) NOT NULL,
         slug VARCHAR(255) UNIQUE NOT NULL,
@@ -47,7 +46,7 @@ async function migrate() {
     // ===== TABLE PHOTOS =====
     await client.query(`
       CREATE TABLE IF NOT EXISTS photos (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
         photographer_id UUID NOT NULL REFERENCES photographers(id) ON DELETE CASCADE,
         original_url TEXT NOT NULL,
@@ -68,7 +67,7 @@ async function migrate() {
     // ===== TABLE FACE_EMBEDDINGS (empreintes faciales) =====
     await client.query(`
       CREATE TABLE IF NOT EXISTS face_embeddings (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         photo_id UUID NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
         event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
         embedding vector(512) NOT NULL,
@@ -85,7 +84,7 @@ async function migrate() {
     // ===== TABLE TRANSACTIONS (paiements) =====
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         event_id UUID NOT NULL REFERENCES events(id),
         photographer_id UUID NOT NULL REFERENCES photographers(id),
         client_phone VARCHAR(20) NOT NULL,
@@ -103,7 +102,7 @@ async function migrate() {
     // ===== TABLE DOWNLOADS (téléchargements) =====
     await client.query(`
       CREATE TABLE IF NOT EXISTS downloads (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         transaction_id UUID NOT NULL REFERENCES transactions(id),
         photo_id UUID NOT NULL REFERENCES photos(id),
         downloaded_at TIMESTAMP DEFAULT NOW(),
