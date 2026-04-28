@@ -13,7 +13,7 @@ const authMiddleware = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const result = await pool.query(
-      'SELECT id, studio_name, email, plan, photo_limit FROM photographers WHERE id = $1',
+      'SELECT id, studio_name, email, plan, photo_limit, role FROM photographers WHERE id = $1',
       [decoded.id]
     );
 

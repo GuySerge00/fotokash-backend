@@ -1,17 +1,30 @@
-const { Pool } = require('pg');
-require('dotenv').config();
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
-});
-
-pool.on('error', (err) => {
-  console.error('Erreur inattendue sur le pool PostgreSQL', err);
-  process.exit(-1);
-});
-
-module.exports = { pool };
+$lines = @()
+$lines += "const fs = require('fs');"
+$lines += "const content = ["
+$lines += "  `"const { Pool } = require('pg');`","
+$lines += "  `"require('dotenv').config();`","
+$lines += "  `"`","
+$lines += "  `"console.log('DATABASE_URL present:', !!process.env.DATABASE_URL);`","
+$lines += "  `"`","
+$lines += "  `"const pool = new Pool({`","
+$lines += "  `"  host: 'localhost',`","
+$lines += "  `"  port: 5432,`","
+$lines += "  `"  database: 'fotokash_db',`","
+$lines += "  `"  user: 'fotokash_user',`","
+$lines += "  `"  password: 'M`$upp0rt49',`","
+$lines += "  `"  ssl: false,`","
+$lines += "  `"  max: 20,`","
+$lines += "  `"  idleTimeoutMillis: 30000,`","
+$lines += "  `"  connectionTimeoutMillis: 2000,`","
+$lines += "  `"});`","
+$lines += "  `"`","
+$lines += "  `"pool.on('error', (err) => {`","
+$lines += "  `"  console.error('Erreur PostgreSQL:', err.message);`","
+$lines += "  `"  process.exit(-1);`","
+$lines += "  `"});`","
+$lines += "  `"`","
+$lines += "  `"module.exports = { pool };`","
+$lines += "].join('\n');"
+$lines += "fs.writeFileSync('D:/CLAUDE CODE/PROJET/fotokash-backend/src/config/database.js', content);"
+$lines += "console.log('OK');"
+$lines -join "`n" | Set-Content -Path "D:\CLAUDE CODE\PROJET\fotokash-backend\fix-db.js" -Encoding UTF8

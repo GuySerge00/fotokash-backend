@@ -1,3 +1,11 @@
 node_modules/
 .env
 *.log
+*.jpg
+*.bak
+test-*.js
+check-*.js
+fix-*.js
+write-*.js
+selfie-test.jpg
+migration_admin_panel.sql

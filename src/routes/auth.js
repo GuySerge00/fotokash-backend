@@ -19,26 +19,23 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères.' });
     }
 
-    // Vérifier si l'email existe déjà
     const existing = await pool.query('SELECT id FROM photographers WHERE email = $1', [email.toLowerCase()]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Cet email est déjà utilisé.' });
     }
 
-    // Hasher le mot de passe
     const password_hash = await bcrypt.hash(password, 12);
 
-    // Créer le compte
+    // Plan FREE par défaut avec ses limites
     const result = await pool.query(
-      `INSERT INTO photographers (studio_name, email, password_hash, phone)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, studio_name, email, plan, photo_limit, created_at`,
+      `INSERT INTO photographers (studio_name, email, password_hash, phone, plan, photo_limit, status, role)
+       VALUES ($1, $2, $3, $4, 'free', 100, 'inactive', 'photographer')
+       RETURNING id, studio_name, email, plan, photo_limit, role, status, created_at`,
       [studio_name, email.toLowerCase(), password_hash, phone || null]
     );
 
     const photographer = result.rows[0];
 
-    // Générer le token JWT
     const token = jwt.sign(
       { id: photographer.id },
       process.env.JWT_SECRET,
@@ -46,9 +43,8 @@ router.post('/signup', async (req, res) => {
     );
 
     res.status(201).json({
-      message: 'Compte créé avec succès !',
-      token,
-      user: photographer,
+      message: 'Inscription réussie ! Votre compte est en attente d\'activation par l\'administrateur. Vous recevrez une notification dès que votre compte sera activé.',
+      pending: true,
     });
   } catch (err) {
     console.error('Erreur inscription :', err);
@@ -65,9 +61,8 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email et mot de passe requis.' });
     }
 
-    // Chercher le photographe
     const result = await pool.query(
-      'SELECT id, studio_name, email, password_hash, plan, photo_limit FROM photographers WHERE email = $1',
+      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status FROM photographers WHERE email = $1',
       [email.toLowerCase()]
     );
 
@@ -77,20 +72,22 @@ router.post('/login', async (req, res) => {
 
     const photographer = result.rows[0];
 
-    // Vérifier le mot de passe
+    // Point 3 : Bloquer la connexion si compte désactivé
+    if (photographer.status === 'inactive') {
+      return res.status(403).json({ error: 'Votre compte a été désactivé. Contactez l\'administrateur.' });
+    }
+
     const validPassword = await bcrypt.compare(password, photographer.password_hash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
     }
 
-    // Générer le token
     const token = jwt.sign(
       { id: photographer.id },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
-    // Ne pas renvoyer le hash du mot de passe
     delete photographer.password_hash;
 
     res.json({
@@ -108,7 +105,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit, p.created_at,
+      `SELECT p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit, p.role, p.status, p.created_at,
               COUNT(DISTINCT ph.id) as total_photos,
               COUNT(DISTINCT e.id) as total_events,
               COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as total_revenue
@@ -121,7 +118,16 @@ router.get('/me', authMiddleware, async (req, res) => {
       [req.user.id]
     );
 
-    res.json({ user: result.rows[0] });
+    // Récupérer les infos du plan
+    const planResult = await pool.query(
+      'SELECT * FROM subscription_plans WHERE id = $1',
+      [result.rows[0]?.plan || 'free']
+    );
+
+    const user = result.rows[0];
+    user.plan_details = planResult.rows[0] || null;
+
+    res.json({ user });
   } catch (err) {
     console.error('Erreur profil :', err);
     res.status(500).json({ error: 'Erreur serveur.' });

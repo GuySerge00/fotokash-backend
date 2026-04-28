@@ -9,6 +9,7 @@ const authRoutes = require('./routes/auth');
 const eventRoutes = require('./routes/events');
 const photoRoutes = require('./routes/photos');
 const paymentRoutes = require('./routes/payments');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -26,14 +27,14 @@ app.use(cors({
 // Rate limiting global
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 5000,
   message: { error: 'Trop de requêtes. Réessayez dans quelques minutes.' },
 }));
 
 // Rate limiting spécifique pour la recherche faciale (plus coûteuse)
 const faceSearchLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 5,
+  max: 500,
   message: { error: 'Trop de recherches. Attendez un moment.' },
 });
 
@@ -46,9 +47,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/photos', photoRoutes);
 app.use('/api/payments', paymentRoutes);
-
-// Appliquer le rate limit sur la recherche faciale
-app.use('/api/photos/face-search', faceSearchLimiter);
+app.use('/api/admin', adminRoutes);
 
 // ===== ROUTE DE SANTÉ =====
 app.get('/api/health', (req, res) => {

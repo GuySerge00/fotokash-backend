@@ -7,19 +7,4 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Helper pour upload un buffer
-cloudinary.uploader.upload_stream = (options, buffer) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
-      if (error) reject(error);
-      else resolve(result);
-    });
-    const Readable = require('stream').Readable;
-    const readable = new Readable();
-    readable.push(buffer);
-    readable.push(null);
-    readable.pipe(stream);
-  });
-};
-
 module.exports = cloudinary;

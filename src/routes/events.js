@@ -40,13 +40,32 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/events — Créer un événement
+// POST /api/events — Créer un événement (avec vérification limite du plan)
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const { name, date, description } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Le nom de l\'événement est requis.' });
+    }
+
+    // Vérifier la limite d'événements du plan
+    const planCheck = await pool.query(
+      'SELECT sp.event_limit FROM subscription_plans sp WHERE sp.id = $1',
+      [req.user.plan || 'free']
+    );
+    const eventLimit = planCheck.rows[0]?.event_limit;
+
+    if (eventLimit) {
+      const currentCount = await pool.query(
+        'SELECT COUNT(*) as count FROM events WHERE photographer_id = $1',
+        [req.user.id]
+      );
+      if (parseInt(currentCount.rows[0].count) >= eventLimit) {
+        return res.status(403).json({
+          error: `Limite atteinte : votre plan ${(req.user.plan || 'free').toUpperCase()} autorise ${eventLimit} événement(s). Passez à un plan supérieur.`
+        });
+      }
     }
 
     const slug = generateSlug(name);
@@ -67,19 +86,22 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
-
 // GET /api/events/:slug/public — Page publique d'un événement (côté client)
 router.get('/:slug/public', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT e.id, e.name, e.slug, e.date, e.cover_url, e.description,
               p.studio_name as photographer_name,
+              p.plan as photographer_plan,
+              COALESCE(sp.mobile_money_enabled, false) as mobile_money_enabled,
+              COALESCE(sp.commission_rate, 0) as commission_rate,
               COUNT(ph.id) as photos_count
        FROM events e
        JOIN photographers p ON p.id = e.photographer_id
+       LEFT JOIN subscription_plans sp ON sp.id = p.plan
        LEFT JOIN photos ph ON ph.event_id = e.id AND ph.is_processed = true
        WHERE e.slug = $1 AND e.is_public = true
-       GROUP BY e.id, p.studio_name`,
+       GROUP BY e.id, p.studio_name, p.plan, sp.mobile_money_enabled, sp.commission_rate`,
       [req.params.slug]
     );
 
@@ -93,7 +115,6 @@ router.get('/:slug/public', async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
-
 // PUT /api/events/:id — Modifier un événement
 router.put('/:id', authMiddleware, ownsResource('event'), async (req, res) => {
   try {
@@ -119,17 +140,22 @@ router.put('/:id', authMiddleware, ownsResource('event'), async (req, res) => {
   }
 });
 
-// DELETE /api/events/:id — Supprimer un événement
+// DELETE /api/events/:id — Supprimer un événement et tout son contenu
 router.delete('/:id', authMiddleware, ownsResource('event'), async (req, res) => {
   try {
-    await pool.query('DELETE FROM events WHERE id = $1', [req.params.id]);
-    res.json({ message: 'Événement supprimé.' });
+    const eventId = req.params.id;
+    // Supprimer dans l'ordre pour respecter les foreign keys
+    await pool.query('DELETE FROM face_embeddings WHERE event_id = $1', [eventId]);
+    await pool.query('DELETE FROM downloads WHERE transaction_id IN (SELECT id FROM transactions WHERE event_id = $1)', [eventId]);
+    await pool.query('DELETE FROM transactions WHERE event_id = $1', [eventId]);
+    await pool.query('DELETE FROM photos WHERE event_id = $1', [eventId]);
+    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
+    res.json({ message: 'Événement et contenu supprimés.' });
   } catch (err) {
     console.error('Erreur suppression :', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
-
 // GET /api/events/:id/stats — Stats détaillées d'un événement
 router.get('/:id/stats', authMiddleware, ownsResource('event'), async (req, res) => {
   try {
