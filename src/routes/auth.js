@@ -134,4 +134,32 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
+// PUT /api/auth/change-password — Changer son mot de passe
+router.put('/change-password', authMiddleware, async (req, res) => {
+  try {
+    var currentPassword = req.body.current_password;
+    var newPassword = req.body.new_password;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Mot de passe actuel et nouveau requis.' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Le nouveau mot de passe doit faire au moins 6 caracteres.' });
+    }
+    var result = await pool.query('SELECT password_hash FROM photographers WHERE id = $1', [req.user.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Compte introuvable.' });
+    }
+    var validPassword = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
+    }
+    var newHash = await bcrypt.hash(newPassword, 12);
+    await pool.query('UPDATE photographers SET password_hash = $1, updated_at = NOW() WHERE id = $2', [newHash, req.user.id]);
+    res.json({ message: 'Mot de passe modifie avec succes !' });
+  } catch (err) {
+    console.error('Erreur changement mot de passe:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;

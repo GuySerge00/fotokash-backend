@@ -607,4 +607,33 @@ router.delete('/photographers/:id', async (req, res) => {
   }
 });
 
+// ============================================
+// PATCH /api/admin/photographers/:id/password
+// Reinitialiser le mot de passe d'un photographe
+// ============================================
+router.patch('/photographers/:id/password', async (req, res) => {
+  try {
+    var id = req.params.id;
+    var bcrypt = require('bcryptjs');
+    var defaultPassword = 'FotoKash2026!';
+    var hash = await bcrypt.hash(defaultPassword, 12);
+    var result = await pool.query(
+      'UPDATE photographers SET password_hash = $1, updated_at = NOW() WHERE id = $2 AND (role != $3 OR role IS NULL) RETURNING id, studio_name, email',
+      [hash, id, 'admin']
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Photographe introuvable.' });
+    }
+    await pool.query(
+      'INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES ($1, $2, $3, $4, $5, $6)',
+      ['password_reset', 'photographer', id, req.user.id, req.user.studio_name, JSON.stringify({ reset_for: result.rows[0].email })]
+    );
+    res.json({ message: 'Mot de passe reinitialise. Nouveau mot de passe : ' + defaultPassword, defaultPassword: defaultPassword });
+  } catch (error) {
+    console.error('Erreur reset password:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+
 module.exports = router;
