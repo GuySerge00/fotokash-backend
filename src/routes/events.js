@@ -92,6 +92,7 @@ router.get('/:slug/public', async (req, res) => {
     const result = await pool.query(
       `SELECT e.id, e.name, e.slug, e.date, e.cover_url, e.description,
               p.studio_name as photographer_name,
+              p.phone as photographer_phone,
               p.plan as photographer_plan,
               COALESCE(sp.mobile_money_enabled, false) as mobile_money_enabled,
               COALESCE(sp.commission_rate, 0) as commission_rate,
@@ -101,7 +102,7 @@ router.get('/:slug/public', async (req, res) => {
        LEFT JOIN subscription_plans sp ON sp.id = p.plan
        LEFT JOIN photos ph ON ph.event_id = e.id AND ph.is_processed = true
        WHERE e.slug = $1 AND e.is_public = true
-       GROUP BY e.id, p.studio_name, p.plan, sp.mobile_money_enabled, sp.commission_rate`,
+       GROUP BY e.id, p.studio_name, p.phone, p.plan, sp.mobile_money_enabled, sp.commission_rate`,
       [req.params.slug]
     );
 

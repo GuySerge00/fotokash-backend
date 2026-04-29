@@ -51,7 +51,10 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
       }
       var webBuffer = await sharp(file.buffer).resize(1920, 1920, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
       var thumbBuffer = await sharp(file.buffer).resize(400, 400, { fit: 'cover' }).jpeg({ quality: 75 }).toBuffer();
-      var svgWatermark = '<svg width="400" height="100"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="48" font-weight="bold" fill="rgba(255,255,255,0.4)" transform="rotate(-30, 200, 50)">FotoKash</text></svg>';
+      var wmResult = await pool.query("SELECT value FROM app_settings WHERE key = 'watermark_text'");
+      var wmText = wmResult.rows[0] ? wmResult.rows[0].value : 'FOTOKASH';
+      var svgWatermark = '<svg width="800" height="200"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="50" font-weight="bold" fill="rgba(255,255,255,0.4)" transform="rotate(-25, 400, 100)">' + wmText + '</text></svg>';
+
       var watermarkedBuffer = await sharp(webBuffer).composite([{ input: Buffer.from(svgWatermark), gravity: 'center' }]).toBuffer();
       var results = await Promise.all([
         uploadToCloudinary(originalBuffer, { folder: 'fotokash/' + event_id + '/originals', resource_type: 'image' }),
@@ -91,7 +94,7 @@ router.get('/event/:eventId/public', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Erreur serveur.' }); }
 });router.get('/qr/:code', async (req, res) => {
   try {
-    var result = await pool.query('SELECT p.id, p.watermarked_url, p.thumbnail_url, p.qr_code_id, e.name as event_name, e.slug as event_slug FROM photos p JOIN events e ON e.id = p.event_id WHERE p.qr_code_id = $1', [req.params.code]);
+    var result = await pool.query('SELECT p.id, p.original_url, p.watermarked_url, p.thumbnail_url, p.qr_code_id, e.name as event_name, e.slug as event_slug FROM photos p JOIN events e ON e.id = p.event_id WHERE p.qr_code_id = $1', [req.params.code]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Photo introuvable.' });
     res.json({ photo: result.rows[0] });
   } catch (err) { res.status(500).json({ error: 'Erreur serveur.' }); }
@@ -117,7 +120,10 @@ router.post('/face-search', upload.single('selfie'), async (req, res) => {
     var photoFields = isFree
       ? 'p.id, p.original_url, p.watermarked_url, p.thumbnail_url, p.qr_code_id'
       : 'p.id, p.watermarked_url, p.thumbnail_url, p.qr_code_id';
-    var result = await pool.query('SELECT DISTINCT ' + photoFields + ', 1 - (fe.embedding <=> $1::vector) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1::vector) > 0.6 ORDER BY similarity DESC LIMIT 50', [embeddingStr, event_id]);
+    var thresholdRes = await pool.query("SELECT value FROM app_settings WHERE key = 'face_search_threshold'");
+    var faceThreshold = thresholdRes.rows[0] ? parseFloat(thresholdRes.rows[0].value) : 0.6;
+    console.log('Face search threshold:', faceThreshold);
+    var result = await pool.query('SELECT DISTINCT ' + photoFields + ', 1 - (fe.embedding <=> $1::vector) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1::vector) > ' + faceThreshold + ' ORDER BY similarity DESC LIMIT 50', [embeddingStr, event_id]);
     console.log('Face search results:', result.rows.length, 'matches found');
     res.json({ matched_photos: result.rows, count: result.rows.length });
   } catch (err) { console.error('Face search error:', err.message); res.status(500).json({ error: 'Erreur recherche.' }); }
@@ -185,6 +191,46 @@ router.post('/free-download', async (req, res) => {
   } catch (err) {
     console.error('Erreur free download:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+
+// DELETE /api/photos/:id - Supprimer une photo
+router.delete('/:id', async (req, res) => {
+  try {
+    var photoId = req.params.id;
+    // Supprimer les face_embeddings liees
+    await pool.query('DELETE FROM face_embeddings WHERE photo_id = $1', [photoId]);
+    // Supprimer les downloads lies
+    await pool.query('DELETE FROM downloads WHERE photo_id = $1', [photoId]);
+    // Supprimer la photo
+    var result = await pool.query('DELETE FROM photos WHERE id = $1 RETURNING id', [photoId]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Photo introuvable.' });
+    }
+    res.json({ message: 'Photo supprimee.' });
+  } catch (err) {
+    console.error('Erreur suppression photo:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+
+// GET /api/photos/platform - Infos publiques de la plateforme
+router.get('/platform', async (req, res) => {
+  try {
+    var result = await pool.query(
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_name', 'platform_email', 'maintenance_mode')"
+    );
+    var settings = {};
+    result.rows.forEach(function(r) { settings[r.key] = r.value; });
+    res.json({
+      name: settings.platform_name || 'FotoKash',
+      email: settings.platform_email || 'contact@fotokash.com',
+      maintenance: settings.maintenance_mode === 'true',
+    });
+  } catch (err) {
+    res.json({ name: 'FotoKash', email: 'contact@fotokash.com', maintenance: false });
   }
 });
 

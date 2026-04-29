@@ -42,6 +42,20 @@ const faceSearchLimiter = rateLimit({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Mode maintenance
+app.use(async (req, res, next) => {
+  if (req.path === '/api/health' || req.path.startsWith('/api/admin') || req.path === '/api/auth/login') return next();
+  try {
+    var { pool } = require('./config/database');
+    var result = await pool.query("SELECT value FROM app_settings WHERE key = 'maintenance_mode'");
+    if (result.rows[0] && result.rows[0].value === 'true') {
+      return res.status(503).json({ error: 'FotoKash est en maintenance. Revenez bientot.', maintenance: true });
+    }
+  } catch(e) {}
+  next();
+});
+
+
 // ===== ROUTES API =====
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
