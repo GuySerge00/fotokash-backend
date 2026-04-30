@@ -37,7 +37,7 @@ router.post('/:id/stop', authMiddleware, ownsResource('event'), async (req, res)
 router.get('/:slug', async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT e.id, e.name, e.slug, e.date, e.is_live, e.live_started_at, e.cover_url, p.studio_name as photographer_name, p.phone as photographer_phone, COUNT(ph.id) as photos_count FROM events e JOIN photographers p ON p.id = e.photographer_id LEFT JOIN photos ph ON ph.event_id = e.id AND ph.is_processed = true WHERE e.slug = $1 AND e.is_public = true GROUP BY e.id, p.studio_name, p.phone",
+      "SELECT e.id, e.name, e.slug, e.date, e.is_live, e.live_started_at, e.cover_url, p.studio_name as photographer_name, p.phone as photographer_phone, p.plan as photographer_plan, COALESCE(sp.mobile_money_enabled, false) as mobile_money_enabled, COUNT(ph.id) as photos_count FROM events e JOIN photographers p ON p.id = e.photographer_id LEFT JOIN subscription_plans sp ON sp.id = p.plan LEFT JOIN photos ph ON ph.event_id = e.id AND ph.is_processed = true WHERE e.slug = $1 AND e.is_public = true GROUP BY e.id, p.studio_name, p.phone, p.plan, sp.mobile_money_enabled",
       [req.params.slug]
     );
     if (result.rows.length === 0) {
@@ -91,7 +91,7 @@ router.post('/:slug/search', async (req, res) => {
     const visitor = visitorResult.rows[0];
 
     const matchResult = await pool.query(
-      "SELECT p.id, p.thumbnail_url, p.watermarked_url, p.qr_code_id, 1 - (fe.embedding <=> $1) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1) >= $3 ORDER BY similarity DESC",
+      "SELECT p.id, p.thumbnail_url, p.watermarked_url, p.original_url, p.qr_code_id, 1 - (fe.embedding <=> $1) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1) >= $3 ORDER BY similarity DESC",
       [embeddingStr, event.id, threshold]
     );
 
@@ -126,7 +126,7 @@ router.post('/:slug/refresh', async (req, res) => {
     const threshold = thresholdResult.rows.length > 0 ? parseFloat(thresholdResult.rows[0].value) : 0.3;
 
     const matchResult = await pool.query(
-      "SELECT p.id, p.thumbnail_url, p.watermarked_url, p.qr_code_id, 1 - (fe.embedding <=> $1) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1) >= $3 ORDER BY similarity DESC",
+      "SELECT p.id, p.thumbnail_url, p.watermarked_url, p.original_url, p.qr_code_id, 1 - (fe.embedding <=> $1) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1) >= $3 ORDER BY similarity DESC",
       [embeddingStr, visitor.event_id, threshold]
     );
 

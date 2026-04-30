@@ -146,8 +146,10 @@ router.delete('/:id', authMiddleware, ownsResource('event'), async (req, res) =>
   try {
     const eventId = req.params.id;
     // Supprimer dans l'ordre pour respecter les foreign keys
+    await pool.query('DELETE FROM live_matches WHERE visitor_id IN (SELECT id FROM live_visitors WHERE event_id = $1)', [eventId]);
+    await pool.query('DELETE FROM live_visitors WHERE event_id = $1', [eventId]);
     await pool.query('DELETE FROM face_embeddings WHERE event_id = $1', [eventId]);
-    await pool.query('DELETE FROM downloads WHERE transaction_id IN (SELECT id FROM transactions WHERE event_id = $1)', [eventId]);
+    await pool.query('DELETE FROM downloads WHERE photo_id IN (SELECT id FROM photos WHERE event_id = $1)', [eventId]);
     await pool.query('DELETE FROM transactions WHERE event_id = $1', [eventId]);
     await pool.query('DELETE FROM photos WHERE event_id = $1', [eventId]);
     await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
