@@ -10,6 +10,7 @@ const eventRoutes = require('./routes/events');
 const photoRoutes = require('./routes/photos');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
+const liveRoutes = require('./routes/live');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -62,6 +63,7 @@ app.use('/api/events', eventRoutes);
 app.use('/api/photos', photoRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/live', liveRoutes);
 
 // ===== ROUTE DE SANTÉ =====
 app.get('/api/health', (req, res) => {

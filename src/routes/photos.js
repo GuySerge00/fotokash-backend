@@ -53,7 +53,7 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
       var thumbBuffer = await sharp(file.buffer).resize(400, 400, { fit: 'cover' }).jpeg({ quality: 75 }).toBuffer();
       var wmResult = await pool.query("SELECT value FROM app_settings WHERE key = 'watermark_text'");
       var wmText = wmResult.rows[0] ? wmResult.rows[0].value : 'FOTOKASH';
-      var svgWatermark = '<svg width="800" height="200"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="50" font-weight="bold" fill="rgba(255,255,255,0.4)" transform="rotate(-25, 400, 100)">' + wmText + '</text></svg>';
+      var webMeta = await sharp(webBuffer).metadata(); var svgW = webMeta.width; var svgH = webMeta.height; var svgWatermark = '<svg width="' + svgW + '" height="' + svgH + '"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="' + Math.max(Math.floor(svgW / 16), 20) + '" font-weight="bold" fill="rgba(255,255,255,0.4)" transform="rotate(-25, ' + Math.floor(svgW/2) + ', ' + Math.floor(svgH/2) + ')">' + wmText + '</text></svg>';
 
       var watermarkedBuffer = await sharp(webBuffer).composite([{ input: Buffer.from(svgWatermark), gravity: 'center' }]).toBuffer();
       var results = await Promise.all([
