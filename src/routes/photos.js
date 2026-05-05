@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const multer = require('multer');
 const sharp = require('sharp');
 const QRCode = require('qrcode');
@@ -43,6 +44,12 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
     var uploadedPhotos = [];
     for (var i = 0; i < req.files.length; i++) {
       var file = req.files[i];
+      var fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
+      var dupCheck = await pool.query("SELECT id FROM photos WHERE event_id = $1 AND file_hash = $2", [event_id, fileHash]);
+      if (dupCheck.rows.length > 0) {
+        console.log("Doublon detecte: " + file.originalname);
+        continue;
+      }
       var qr_code_id = generateQRCode();
       // Compresser l'original pour Cloudinary (max 10Mo)
       var originalBuffer = file.buffer;
@@ -64,14 +71,17 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
       var qrCodeDataUrl = await QRCode.toDataURL('https://fotokash.com/p/' + qr_code_id, { width: 300, margin: 2, color: { dark: '#E8593C', light: '#FFFFFF' } });
       var metadata = await sharp(file.buffer).metadata();
       var row = await pool.query(
-        'INSERT INTO photos (event_id, photographer_id, original_url, watermarked_url, thumbnail_url, qr_code_id, qr_code_url, width, height, file_size) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, qr_code_id, watermarked_url, thumbnail_url, created_at',
-        [event_id, req.user.id, results[0].secure_url, results[1].secure_url, results[2].secure_url, qr_code_id, qrCodeDataUrl, metadata.width, metadata.height, file.size]
+        'INSERT INTO photos (event_id, photographer_id, original_url, watermarked_url, thumbnail_url, qr_code_id, qr_code_url, width, height, file_size, file_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id, qr_code_id, watermarked_url, thumbnail_url, created_at',
+        [event_id, req.user.id, results[0].secure_url, results[1].secure_url, results[2].secure_url, qr_code_id, qrCodeDataUrl, metadata.width, metadata.height, file.size, fileHash]
       );
       uploadedPhotos.push(row.rows[0]);
 // Ajouter le job de traitement facial
       faceQueue.add({ photoId: row.rows[0].id, eventId: event_id, imageUrl: results[0].secure_url });
     }
-    res.status(201).json({ message: uploadedPhotos.length + ' photo(s) uploadee(s).', photos: uploadedPhotos });
+    var skipped = req.files.length - uploadedPhotos.length;
+    var msg = uploadedPhotos.length + ' photo(s) uploadee(s).';
+    if (skipped > 0) msg += ' ' + skipped + ' doublon(s) ignore(s).';
+    res.status(201).json({ message: msg, photos: uploadedPhotos });
   } catch (err) {
     console.error('Erreur upload :', err);
     res.status(500).json({ error: 'Erreur upload.' });
