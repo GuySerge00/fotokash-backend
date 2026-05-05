@@ -5,6 +5,25 @@ const axios = require('axios');
 
 const router = express.Router();
 
+// GET /api/live/stats/global - Stats publiques pour landing page
+router.get('/stats/global', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM photographers WHERE status = 'active' AND role != 'admin') as photographers_count,
+        (SELECT COUNT(*) FROM events) as events_count,
+        (SELECT COUNT(*) FROM photos) as photos_count,
+        (SELECT COUNT(*) FROM live_visitors) as visitors_count,
+        (SELECT COUNT(*) FROM downloads) as downloads_count
+    `);
+    res.json({ stats: result.rows[0] });
+  } catch (err) {
+    console.error("Erreur stats global:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+
 // POST /api/live/:id/start
 router.post('/:id/start', authMiddleware, ownsResource('event'), async (req, res) => {
   try {
@@ -162,3 +181,5 @@ router.get('/:id/dashboard', authMiddleware, ownsResource('event'), async (req, 
 });
 
 module.exports = router;
+
+
