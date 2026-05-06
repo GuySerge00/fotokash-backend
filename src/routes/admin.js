@@ -233,6 +233,25 @@ router.patch('/photographers/:id/status', async (req, res) => {
       return res.status(404).json({ error: 'Photographe introuvable.' });
     }
 
+    // Email automatique
+    try {
+      const { sendEmail, emailTemplate } = require('../config/mailer');
+      const p = result.rows[0];
+      if (status === 'active') {
+        await sendEmail({
+          to: p.email,
+          subject: 'FotoKash - Votre compte est actif !',
+          html: emailTemplate('Bienvenue sur FotoKash !', '<p>Bonjour ' + p.studio_name + ',</p><p>Votre compte photographe a ete active avec succes. Vous pouvez maintenant vous connecter, creer des evenements et uploader vos photos.</p><p>Bonne utilisation !</p>', 'Se connecter', 'https://fotokash.com')
+        });
+      } else {
+        await sendEmail({
+          to: p.email,
+          subject: 'FotoKash - Compte desactive',
+          html: emailTemplate('Compte desactive', '<p>Bonjour ' + p.studio_name + ',</p><p>Votre compte photographe a ete desactive par l administrateur. Si vous pensez qu il s agit d une erreur, veuillez nous contacter.</p>', null, null)
+        });
+      }
+    } catch (emailErr) { console.error('[EMAIL] Erreur notification statut:', emailErr.message); }
+
     res.json({
       message: `Photographe ${status === 'active' ? 'activé' : 'désactivé'} avec succès.`,
       photographer: result.rows[0]
@@ -395,6 +414,17 @@ router.patch('/photographers/:id/plan', async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Photographe introuvable.' });
     }
+
+    // Email automatique changement de plan
+    try {
+      const { sendEmail, emailTemplate } = require('../config/mailer');
+      const p = result.rows[0];
+      await sendEmail({
+        to: p.email,
+        subject: 'FotoKash - Votre plan a ete mis a jour',
+        html: emailTemplate('Plan mis a jour', '<p>Bonjour ' + p.studio_name + ',</p><p>Votre plan a ete change en <strong>' + planData.name.toUpperCase() + '</strong>.</p><p>Limite photos : ' + planData.photo_limit + ' par evenement</p><p>Bonne utilisation !</p>', 'Voir mon compte', 'https://fotokash.com')
+      });
+    } catch (emailErr) { console.error('[EMAIL] Erreur notification plan:', emailErr.message); }
 
     res.json({ message: `Plan changé en ${planData.name}.`, photographer: result.rows[0] });
   } catch (error) {
@@ -676,6 +706,87 @@ router.post('/events/cleanup', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Erreur cleanup:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/admin/events/:eventId/photos - Voir toutes les photos d'un evenement (admin only)
+router.get('/events/:eventId/photos', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, original_url, watermarked_url, thumbnail_url, qr_code_id, width, height, file_size, created_at FROM photos WHERE event_id = $1 ORDER BY created_at DESC',
+      [req.params.eventId]
+    );
+    const event = await pool.query('SELECT name, slug FROM events WHERE id = $1', [req.params.eventId]);
+    res.json({ photos: result.rows, event: event.rows[0] || null });
+  } catch (err) {
+    console.error("Erreur admin photos:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/admin/send-email - Envoyer un email a un photographe
+router.post('/send-email', async (req, res) => {
+  try {
+    const { photographer_id, subject, message } = req.body;
+    if (!photographer_id || !subject || !message) {
+      return res.status(400).json({ error: "Photographe, sujet et message requis." });
+    }
+    const pResult = await pool.query('SELECT email, studio_name FROM photographers WHERE id = $1', [photographer_id]);
+    if (pResult.rows.length === 0) return res.status(404).json({ error: "Photographe introuvable." });
+    
+    const photographer = pResult.rows[0];
+    const { sendEmail, emailTemplate } = require('../config/mailer');
+    const html = emailTemplate(
+      subject,
+      '<p>' + message.replace(/\n/g, '<br>') + '</p>',
+      'Acceder a FotoKash',
+      'https://fotokash.com'
+    );
+    const result = await sendEmail({ to: photographer.email, subject: 'FotoKash - ' + subject, html });
+    
+    if (result.success) {
+      await pool.query(
+        "INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES ($1, $2, $3, $4, $5, $6)",
+        ['send_email', 'photographer', photographer_id, req.user.id, req.user.studio_name, JSON.stringify({ to: photographer.email, subject })]
+      );
+      res.json({ message: "Email envoye a " + photographer.email });
+    } else {
+      res.status(500).json({ error: "Erreur envoi: " + result.error });
+    }
+  } catch (err) {
+    console.error("Erreur send-email:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// PATCH /api/admin/photographers/:id/info - Modifier les infos du photographe
+router.patch('/photographers/:id/info', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { studio_name, email, phone } = req.body;
+    
+    if (!studio_name && !email && !phone) {
+      return res.status(400).json({ error: "Aucune donnee a modifier." });
+    }
+
+    const result = await pool.query(
+      'UPDATE photographers SET studio_name = COALESCE($1, studio_name), email = COALESCE($2, email), phone = COALESCE($3, phone), updated_at = NOW() WHERE id = $4 AND (role != $5 OR role IS NULL) RETURNING id, studio_name, email, phone',
+      [studio_name || null, email || null, phone || null, id, 'admin']
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Photographe introuvable." });
+    }
+
+    await pool.query(
+      "INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES ($1, $2, $3, $4, $5, $6)",
+      ['update_info', 'photographer', id, req.user.id, req.user.studio_name, JSON.stringify({ studio_name, email, phone })]
+    );
+
+    res.json({ message: "Informations mises a jour.", photographer: result.rows[0] });
+  } catch (err) {
+    console.error("Erreur update info:", err);
     res.status(500).json({ error: "Erreur serveur." });
   }
 });
