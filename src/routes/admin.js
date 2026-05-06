@@ -273,11 +273,18 @@ router.get('/photographers/:id', async (req, res) => {
     }
 
     const eventsQuery = `
-      SELECT id, name, slug, date, status, created_at,
-        (SELECT COUNT(*) FROM photos WHERE event_id = e.id) as photo_count
+      SELECT e.id, e.name, e.slug, e.date, e.status, e.created_at,
+        (SELECT COUNT(*) FROM photos WHERE event_id = e.id) as photo_count,
+        sp.event_retention_days,
+        CASE WHEN sp.event_retention_days IS NOT NULL
+          THEN EXTRACT(DAY FROM (e.created_at + (sp.event_retention_days || ' days')::INTERVAL) - NOW())
+          ELSE NULL
+        END as days_remaining
       FROM events e
-      WHERE photographer_id = $1
-      ORDER BY created_at DESC
+      JOIN photographers p ON p.id = e.photographer_id
+      LEFT JOIN subscription_plans sp ON sp.id = p.plan
+      WHERE e.photographer_id = $1
+      ORDER BY e.created_at DESC
       LIMIT 10
     `;
     const eventsResult = await pool.query(eventsQuery, [id]);
@@ -308,6 +315,8 @@ router.get('/photographers/:id', async (req, res) => {
         status: e.status,
         photoCount: parseInt(e.photo_count),
         createdAt: e.created_at,
+        retentionDays: e.event_retention_days,
+        daysRemaining: e.days_remaining ? parseInt(e.days_remaining) : null,
       }))
     });
   } catch (error) {
