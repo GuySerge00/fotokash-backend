@@ -637,3 +637,36 @@ router.patch('/photographers/:id/password', async (req, res) => {
 
 
 module.exports = router;
+
+// GET /api/admin/events/expiring - Evenements proches de l'expiration
+router.get('/events/expiring', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT e.id, e.name, e.created_at, e.slug, p.studio_name, p.plan,
+        sp.event_retention_days,
+        e.created_at + (sp.event_retention_days || ' days')::INTERVAL as expires_at,
+        EXTRACT(DAY FROM (e.created_at + (sp.event_retention_days || ' days')::INTERVAL) - NOW()) as days_remaining
+      FROM events e
+      JOIN photographers p ON p.id = e.photographer_id
+      JOIN subscription_plans sp ON sp.id = p.plan
+      WHERE sp.event_retention_days IS NOT NULL
+      ORDER BY days_remaining ASC
+    `);
+    res.json({ events: result.rows });
+  } catch (err) {
+    console.error("Erreur events expiring:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/admin/events/cleanup - Declencher le nettoyage manuellement
+router.post('/events/cleanup', async (req, res) => {
+  try {
+    const { cleanupExpiredEvents } = require('../jobs/cleanupEvents');
+    const result = await cleanupExpiredEvents();
+    res.json(result);
+  } catch (err) {
+    console.error("Erreur cleanup:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
