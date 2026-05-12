@@ -42,8 +42,16 @@ router.post('/signup', async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
+    // Log inscription dans admin_logs
+    await pool.query(
+      `INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      ['photographer_registered', 'photographer', photographer.id, photographer.id,
+       photographer.studio_name, JSON.stringify({ email: photographer.email, plan: photographer.plan })]
+    );
+
     res.status(201).json({
-      message: 'Inscription réussie ! Votre compte est en attente d\'activation par l\'administrateur. Vous recevrez une notification dès que votre compte sera activé.',
+      message: "Inscription réussie ! Votre compte est en attente d'activation par l'administrateur. Vous recevrez une notification dès que votre compte sera activé.",
       pending: true,
     });
   } catch (err) {

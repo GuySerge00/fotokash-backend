@@ -23,6 +23,74 @@ function uploadToCloudinary(buffer, options) {
   var b64 = 'data:image/jpeg;base64,' + buffer.toString('base64');
   return cloudinary.uploader.upload(b64, options);
 }
+
+// ============================================================
+// Traitement optimise d'une seule photo
+// ============================================================
+async function processOnePhoto(file, event_id, userId, wmText) {
+  var fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+  var dupCheck = await pool.query('SELECT id FROM photos WHERE event_id = $1 AND file_hash = $2', [event_id, fileHash]);
+  if (dupCheck.rows.length > 0) {
+    console.log('Doublon detecte: ' + file.originalname);
+    return null; // doublon
+  }
+
+  var qr_code_id = generateQRCode();
+
+  // OPTIMISATION 1 : Decoder le buffer original UNE SEULE FOIS avec sharp
+  // et extraire les metadata en meme temps
+  var sharpInstance = sharp(file.buffer);
+  var metadata = await sharpInstance.metadata();
+
+  // OPTIMISATION 2 : Toutes les transformations sharp en parallele
+  var [originalBuffer, webBuffer, thumbBuffer] = await Promise.all([
+    // Original (compresse seulement si > 9Mo)
+    file.size > 9 * 1024 * 1024
+      ? sharp(file.buffer).resize(3000, 3000, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer()
+      : Promise.resolve(file.buffer),
+    // Web version
+    sharp(file.buffer).resize(1920, 1920, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer(),
+    // Thumbnail
+    sharp(file.buffer).resize(400, 400, { fit: 'cover' }).jpeg({ quality: 75 }).toBuffer(),
+  ]);
+
+  // Watermark SVG adapte a la taille du webBuffer
+  var webMeta = await sharp(webBuffer).metadata();
+  var svgW = webMeta.width;
+  var svgH = webMeta.height;
+  var svgWatermark = '<svg width="' + svgW + '" height="' + svgH + '">' +
+    '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" ' +
+    'font-size="' + Math.max(Math.floor(svgW / 16), 20) + '" font-weight="bold" ' +
+    'fill="rgba(255,255,255,0.4)" transform="rotate(-25, ' + Math.floor(svgW / 2) + ', ' + Math.floor(svgH / 2) + ')">' +
+    wmText + '</text></svg>';
+
+  var watermarkedBuffer = await sharp(webBuffer)
+    .composite([{ input: Buffer.from(svgWatermark), gravity: 'center' }])
+    .toBuffer();
+
+  // OPTIMISATION 3 : Les 3 uploads Cloudinary + QR code en parallele
+  var [origUp, wmUp, thumbUp, qrCodeDataUrl] = await Promise.all([
+    uploadToCloudinary(originalBuffer, { folder: 'fotokash/' + event_id + '/originals', resource_type: 'image' }),
+    uploadToCloudinary(watermarkedBuffer, { folder: 'fotokash/' + event_id + '/watermarked', resource_type: 'image' }),
+    uploadToCloudinary(thumbBuffer, { folder: 'fotokash/' + event_id + '/thumbnails', resource_type: 'image' }),
+    QRCode.toDataURL('https://fotokash.com/p/' + qr_code_id, { width: 300, margin: 2, color: { dark: '#E8593C', light: '#FFFFFF' } }),
+  ]);
+
+  // Insert DB
+  var row = await pool.query(
+    'INSERT INTO photos (event_id, photographer_id, original_url, watermarked_url, thumbnail_url, qr_code_id, qr_code_url, width, height, file_size, file_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id, qr_code_id, watermarked_url, thumbnail_url, created_at',
+    [event_id, userId, origUp.secure_url, wmUp.secure_url, thumbUp.secure_url, qr_code_id, qrCodeDataUrl, metadata.width, metadata.height, file.size, fileHash]
+  );
+
+  // Job facial
+  faceQueue.add({ photoId: row.rows[0].id, eventId: event_id, imageUrl: origUp.secure_url });
+
+  return row.rows[0];
+}
+
+// ============================================================
+// POST /upload — Upload optimise avec traitement par lots
+// ============================================================
 router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, res) => {
   try {
     var event_id = req.body.event_id;
@@ -30,7 +98,7 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
     var eventCheck = await pool.query('SELECT id FROM events WHERE id = $1 AND photographer_id = $2', [event_id, req.user.id]);
     if (eventCheck.rows.length === 0) return res.status(403).json({ error: 'Evenement introuvable.' });
 
-    // Vérifier la limite de photos du plan
+    // Verifier la limite de photos du plan
     var planCheck = await pool.query('SELECT sp.photo_limit FROM subscription_plans sp WHERE sp.id = $1', [req.user.plan || 'free']);
     var photoLimit = planCheck.rows[0] ? planCheck.rows[0].photo_limit : 100;
     var currentPhotos = await pool.query('SELECT COUNT(*) as count FROM photos WHERE event_id = $1', [event_id]);
@@ -38,46 +106,33 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
     var newCount = req.files.length;
     if (currentCount + newCount > photoLimit) {
       return res.status(403).json({
-        error: 'Limite atteinte : votre plan ' + (req.user.plan || 'free').toUpperCase() + ' autorise ' + photoLimit + ' photos par événement. Vous en avez déjà ' + currentCount + '.'
+        error: 'Limite atteinte : votre plan ' + (req.user.plan || 'free').toUpperCase() + ' autorise ' + photoLimit + ' photos par evenement. Vous en avez deja ' + currentCount + '.'
       });
     }
-    var uploadedPhotos = [];
-    for (var i = 0; i < req.files.length; i++) {
-      var file = req.files[i];
-      var fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
-      var dupCheck = await pool.query("SELECT id FROM photos WHERE event_id = $1 AND file_hash = $2", [event_id, fileHash]);
-      if (dupCheck.rows.length > 0) {
-        console.log("Doublon detecte: " + file.originalname);
-        continue;
-      }
-      var qr_code_id = generateQRCode();
-      // Compresser l'original pour Cloudinary (max 10Mo)
-      var originalBuffer = file.buffer;
-      if (file.size > 9 * 1024 * 1024) {
-        originalBuffer = await sharp(file.buffer).resize(3000, 3000, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
-      }
-      var webBuffer = await sharp(file.buffer).resize(1920, 1920, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
-      var thumbBuffer = await sharp(file.buffer).resize(400, 400, { fit: 'cover' }).jpeg({ quality: 75 }).toBuffer();
-      var wmResult = await pool.query("SELECT value FROM app_settings WHERE key = 'watermark_text'");
-      var wmText = wmResult.rows[0] ? wmResult.rows[0].value : 'FOTOKASH';
-      var webMeta = await sharp(webBuffer).metadata(); var svgW = webMeta.width; var svgH = webMeta.height; var svgWatermark = '<svg width="' + svgW + '" height="' + svgH + '"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-size="' + Math.max(Math.floor(svgW / 16), 20) + '" font-weight="bold" fill="rgba(255,255,255,0.4)" transform="rotate(-25, ' + Math.floor(svgW/2) + ', ' + Math.floor(svgH/2) + ')">' + wmText + '</text></svg>';
 
-      var watermarkedBuffer = await sharp(webBuffer).composite([{ input: Buffer.from(svgWatermark), gravity: 'center' }]).toBuffer();
-      var results = await Promise.all([
-        uploadToCloudinary(originalBuffer, { folder: 'fotokash/' + event_id + '/originals', resource_type: 'image' }),
-        uploadToCloudinary(watermarkedBuffer, { folder: 'fotokash/' + event_id + '/watermarked', resource_type: 'image' }),
-        uploadToCloudinary(thumbBuffer, { folder: 'fotokash/' + event_id + '/thumbnails', resource_type: 'image' }),
-      ]);
-      var qrCodeDataUrl = await QRCode.toDataURL('https://fotokash.com/p/' + qr_code_id, { width: 300, margin: 2, color: { dark: '#E8593C', light: '#FFFFFF' } });
-      var metadata = await sharp(file.buffer).metadata();
-      var row = await pool.query(
-        'INSERT INTO photos (event_id, photographer_id, original_url, watermarked_url, thumbnail_url, qr_code_id, qr_code_url, width, height, file_size, file_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id, qr_code_id, watermarked_url, thumbnail_url, created_at',
-        [event_id, req.user.id, results[0].secure_url, results[1].secure_url, results[2].secure_url, qr_code_id, qrCodeDataUrl, metadata.width, metadata.height, file.size, fileHash]
+    // OPTIMISATION 4 : Lire watermark_text UNE SEULE FOIS avant la boucle
+    var wmResult = await pool.query("SELECT value FROM app_settings WHERE key = 'watermark_text'");
+    var wmText = wmResult.rows[0] ? wmResult.rows[0].value : 'FOTOKASH';
+
+    var uploadedPhotos = [];
+    var BATCH_SIZE = 3; // Traiter 3 photos en parallele
+
+    // OPTIMISATION 5 : Traitement par lots de 3 en parallele
+    for (var i = 0; i < req.files.length; i += BATCH_SIZE) {
+      var batch = req.files.slice(i, i + BATCH_SIZE);
+      var results = await Promise.all(
+        batch.map(function(file) {
+          return processOnePhoto(file, event_id, req.user.id, wmText).catch(function(err) {
+            console.error('Erreur traitement photo ' + file.originalname + ':', err.message);
+            return null;
+          });
+        })
       );
-      uploadedPhotos.push(row.rows[0]);
-// Ajouter le job de traitement facial
-      faceQueue.add({ photoId: row.rows[0].id, eventId: event_id, imageUrl: results[0].secure_url });
+      results.forEach(function(r) {
+        if (r) uploadedPhotos.push(r);
+      });
     }
+
     var skipped = req.files.length - uploadedPhotos.length;
     var msg = uploadedPhotos.length + ' photo(s) uploadee(s).';
     if (skipped > 0) msg += ' ' + skipped + ' doublon(s) ignore(s).';
@@ -87,12 +142,17 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
     res.status(500).json({ error: 'Erreur upload.' });
   }
 });
+
+// ============================================================
+// Routes inchangees ci-dessous
+// ============================================================
+
 router.get('/event/:eventId/public', async (req, res) => {
   try {
     var planCheck = await pool.query(
-      `SELECT sp.mobile_money_enabled FROM events e 
-       JOIN photographers p ON p.id = e.photographer_id 
-       LEFT JOIN subscription_plans sp ON sp.id = p.plan 
+      `SELECT sp.mobile_money_enabled FROM events e
+       JOIN photographers p ON p.id = e.photographer_id
+       LEFT JOIN subscription_plans sp ON sp.id = p.plan
        WHERE e.id = $1`, [req.params.eventId]
     );
     var isFree = !planCheck.rows[0]?.mobile_money_enabled;
@@ -102,13 +162,16 @@ router.get('/event/:eventId/public', async (req, res) => {
     var result = await pool.query('SELECT ' + fields + ' FROM photos WHERE event_id = $1 ORDER BY created_at DESC', [req.params.eventId]);
     res.json({ photos: result.rows });
   } catch (err) { res.status(500).json({ error: 'Erreur serveur.' }); }
-});router.get('/qr/:code', async (req, res) => {
+});
+
+router.get('/qr/:code', async (req, res) => {
   try {
     var result = await pool.query('SELECT p.id, p.original_url, p.watermarked_url, p.thumbnail_url, p.qr_code_id, e.name as event_name, e.slug as event_slug FROM photos p JOIN events e ON e.id = p.event_id WHERE p.qr_code_id = $1', [req.params.code]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Photo introuvable.' });
     res.json({ photo: result.rows[0] });
   } catch (err) { res.status(500).json({ error: 'Erreur serveur.' }); }
 });
+
 router.post('/face-search', upload.single('selfie'), async (req, res) => {
   try {
     console.log('Face search request received, event_id:', req.body.event_id, 'file:', req.file ? req.file.size : 'none');
@@ -138,6 +201,7 @@ router.post('/face-search', upload.single('selfie'), async (req, res) => {
     res.json({ matched_photos: result.rows, count: result.rows.length });
   } catch (err) { console.error('Face search error:', err.message); res.status(500).json({ error: 'Erreur recherche.' }); }
 });
+
 router.get('/:id/download', async (req, res) => {
   try {
     var transaction_id = req.query.transaction_id;
@@ -170,7 +234,7 @@ router.get('/pricing', async (req, res) => {
   }
 });
 
-// POST /api/photos/free-download — Enregistrer un téléchargement gratuit
+// POST /api/photos/free-download — Enregistrer un telechargement gratuit
 router.post('/free-download', async (req, res) => {
   try {
     var photoIds = req.body.photo_ids;
@@ -188,14 +252,14 @@ router.post('/free-download', async (req, res) => {
       }
     }
 
-    // Récupérer les URLs originales
+    // Recuperer les URLs originales
     var result = await pool.query(
       'SELECT id, original_url FROM photos WHERE id = ANY($1)',
       [photoIds]
     );
 
     res.json({
-      message: photoIds.length + ' téléchargement(s) enregistré(s).',
+      message: photoIds.length + ' telechargement(s) enregistre(s).',
       photos: result.rows
     });
   } catch (err) {
@@ -203,7 +267,6 @@ router.post('/free-download', async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
-
 
 // DELETE /api/photos/:id - Supprimer une photo
 router.delete('/:id', async (req, res) => {
@@ -224,7 +287,6 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
-
 
 // GET /api/photos/platform - Infos publiques de la plateforme
 router.get('/platform', async (req, res) => {
