@@ -27,7 +27,7 @@ router.get('/', authMiddleware, async (req, res) => {
        LEFT JOIN photos p ON p.event_id = e.id
        LEFT JOIN transactions t ON t.event_id = e.id
        LEFT JOIN downloads d ON d.photo_id = p.id
-       WHERE e.photographer_id = $1
+       WHERE e.photographer_id = $1 AND e.deleted_at IS NULL
        GROUP BY e.id
        ORDER BY e.created_at DESC`,
       [req.user.id]
@@ -58,7 +58,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
     if (eventLimit) {
       const currentCount = await pool.query(
-        'SELECT COUNT(*) as count FROM events WHERE photographer_id = $1',
+        'SELECT COUNT(*) as count FROM events WHERE photographer_id = $1 AND deleted_at IS NULL',
         [req.user.id]
       );
       if (parseInt(currentCount.rows[0].count) >= eventLimit) {

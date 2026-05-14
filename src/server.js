@@ -58,6 +58,10 @@ app.use(async (req, res, next) => {
 
 
 // ===== ROUTES API =====
+// SEO: Sitemap dynamique
+const sitemapRoute = require('./routes/sitemapRoute');
+app.use(sitemapRoute);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/photos', photoRoutes);
