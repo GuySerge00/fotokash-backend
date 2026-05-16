@@ -170,7 +170,7 @@ router.get('/:id/dashboard', authMiddleware, ownsResource('event'), async (req, 
       [eventId]
     );
     const visitors = await pool.query(
-      "SELECT id, visitor_number, matched_count, created_at FROM live_visitors WHERE event_id = $1 ORDER BY created_at DESC LIMIT 20",
+      "SELECT lv.id, lv.visitor_number, lv.matched_count, lv.created_at, COALESCE(t.purchased_count, 0) as purchased_count FROM live_visitors lv LEFT JOIN (SELECT lm.visitor_id, COUNT(DISTINCT t.id) as purchased_count FROM live_matches lm JOIN transactions t ON t.event_id = lm.visitor_id WHERE t.status = 'completed' GROUP BY lm.visitor_id) t ON t.visitor_id = lv.id WHERE lv.event_id = $1 ORDER BY lv.created_at DESC LIMIT 20",
       [eventId]
     );
     res.json({ stats: stats.rows[0], visitors: visitors.rows });
