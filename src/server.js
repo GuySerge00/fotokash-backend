@@ -68,6 +68,7 @@ app.use('/api/photos', photoRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/live', liveRoutes);
+app.use('/api/seo', require('./routes/seo'));
 
 // ===== ROUTE DE SANTÉ =====
 app.get('/api/health', (req, res) => {

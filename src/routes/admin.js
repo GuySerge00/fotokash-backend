@@ -179,7 +179,7 @@ router.get('/photographers', async (req, res) => {
         COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as total_revenue,
         MAX(p.created_at) as last_activity
       FROM photographers p
-      LEFT JOIN events e ON e.photographer_id = p.id
+      LEFT JOIN events e ON e.photographer_id = p.id AND e.deleted_at IS NULL
       LEFT JOIN photos ph ON ph.photographer_id = p.id
       LEFT JOIN transactions t ON t.photographer_id = p.id
       WHERE (p.role != 'admin' OR p.role IS NULL) ${statusFilter} ${searchFilter}
@@ -279,7 +279,7 @@ router.get('/photographers/:id', async (req, res) => {
         COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as total_revenue,
         COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.id END) as total_sales
       FROM photographers p
-      LEFT JOIN events e ON e.photographer_id = p.id
+      LEFT JOIN events e ON e.photographer_id = p.id AND e.deleted_at IS NULL
       LEFT JOIN photos ph ON ph.photographer_id = p.id
       LEFT JOIN transactions t ON t.photographer_id = p.id
       WHERE p.id = $1
