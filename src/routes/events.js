@@ -22,13 +22,20 @@ router.get('/', authMiddleware, async (req, res) => {
       `SELECT e.*,
               COUNT(DISTINCT p.id) as photos_count,
               COUNT(DISTINCT CASE WHEN d.id IS NOT NULL THEN p.id END) as photos_sold,
-              COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as revenue
+              COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as revenue,
+              sp.event_retention_days,
+              CASE WHEN sp.event_retention_days IS NOT NULL
+                THEN EXTRACT(DAY FROM (e.created_at + (sp.event_retention_days || ' days')::INTERVAL) - NOW())::int
+                ELSE NULL
+              END as days_remaining
        FROM events e
        LEFT JOIN photos p ON p.event_id = e.id
        LEFT JOIN transactions t ON t.event_id = e.id
        LEFT JOIN downloads d ON d.photo_id = p.id
+       LEFT JOIN photographers ph ON ph.id = e.photographer_id
+       LEFT JOIN subscription_plans sp ON sp.id = ph.plan
        WHERE e.photographer_id = $1 AND e.deleted_at IS NULL
-       GROUP BY e.id
+       GROUP BY e.id, sp.event_retention_days
        ORDER BY e.created_at DESC`,
       [req.user.id]
     );

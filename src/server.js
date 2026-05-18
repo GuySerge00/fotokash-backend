@@ -11,6 +11,7 @@ const photoRoutes = require('./routes/photos');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
 const liveRoutes = require('./routes/live');
+const { startEventCleanupJob } = require("./jobs/eventCleanup");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -106,6 +107,8 @@ app.use((req, res) => {
 
 // ===== DÉMARRAGE =====
 console.log('ENV VARS:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('PG') || k.includes('NODE')));
+// ===== CRON JOBS =====
+startEventCleanupJob();
 app.listen(PORT, () => {
   console.log(`
   ╔═══════════════════════════════════════════╗
