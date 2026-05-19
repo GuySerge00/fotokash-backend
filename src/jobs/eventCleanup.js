@@ -32,7 +32,7 @@ function startEventCleanupJob() {
           await pool.query('DELETE FROM live_matches WHERE visitor_id IN (SELECT id FROM live_visitors WHERE event_id = $1)', [event.id]);
           await pool.query('DELETE FROM live_visitors WHERE event_id = $1', [event.id]);
           await pool.query('DELETE FROM face_embeddings WHERE event_id = $1', [event.id]);
-          await pool.query('DELETE FROM downloads WHERE photo_id IN (SELECT id FROM photos WHERE event_id = $1)', [event.id]);
+          // Downloads conservés pour l'historique des stats admin
           await pool.query('DELETE FROM transactions WHERE event_id = $1', [event.id]);
           await pool.query('DELETE FROM photos WHERE event_id = $1', [event.id]);
           await pool.query("UPDATE events SET deleted_at = NOW(), is_public = false WHERE id = $1", [event.id]);
