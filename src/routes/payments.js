@@ -4,11 +4,24 @@ const { pool } = require('../config/database');
 
 const router = express.Router();
 
-// Calcul du prix selon les packs
-function calculatePrice(photoCount) {
-  if (photoCount >= 11) return 1000;
-  if (photoCount >= 6) return 500;
-  return photoCount * 200;
+// Calcul du prix selon les packs (dynamique depuis app_settings)
+async function calculatePrice(photoCount) {
+  try {
+    const result = await pool.query("SELECT key, value FROM app_settings WHERE key IN ('photo_price_1','photo_price_6','photo_price_10')");
+    const prices = {};
+    result.rows.forEach(r => { prices[r.key] = parseInt(r.value); });
+    const p1 = prices.photo_price_1 || 200;
+    const p6 = prices.photo_price_6 || 500;
+    const p10 = prices.photo_price_10 || 1000;
+    if (photoCount >= 11) return p10;
+    if (photoCount >= 6) return p6;
+    return photoCount * p1;
+  } catch (err) {
+    console.error('Erreur lecture tarifs:', err.message);
+    if (photoCount >= 11) return 1000;
+    if (photoCount >= 6) return 500;
+    return photoCount * 200;
+  }
 }
 
 // POST /api/payments/initiate — Initier un paiement Mobile Money
@@ -40,7 +53,7 @@ router.post('/initiate', async (req, res) => {
       [event_id]
     );
 
-    const amount = calculatePrice(photo_ids.length);
+    const amount = await calculatePrice(photo_ids.length);
 
     // Créer la transaction en base (statut: pending)
     const transaction = await pool.query(
