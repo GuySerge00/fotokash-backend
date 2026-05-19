@@ -11,7 +11,7 @@ router.use(isAdmin);
 // GET /api/admin/dashboard/stats
 router.get('/dashboard/stats', async (req, res) => {
   try {
-    const { period = 'today' } = req.query;
+    const { period = 'today', startDate, endDate } = req.query;
 
     let dateFilter = '';
     let prevDateFilter = '';
@@ -28,6 +28,16 @@ router.get('/dashboard/stats', async (req, res) => {
       case '30d':
         dateFilter = "AND t.created_at >= NOW() - INTERVAL '30 days'";
         prevDateFilter = "AND t.created_at BETWEEN NOW() - INTERVAL '60 days' AND NOW() - INTERVAL '30 days'";
+        break;
+      case 'custom':
+        if (startDate && endDate) {
+          dateFilter = "AND t.created_at >= '" + startDate + "' AND t.created_at < ('" + endDate + "'::date + INTERVAL '1 day')";
+          const daysDiff = Math.round((new Date(endDate) - new Date(startDate)) / (1000*60*60*24));
+          prevDateFilter = "AND t.created_at >= ('" + startDate + "'::date - INTERVAL '" + daysDiff + " days') AND t.created_at < '" + startDate + "'";
+        } else {
+          dateFilter = "AND DATE(t.created_at) = CURRENT_DATE";
+          prevDateFilter = "AND DATE(t.created_at) = CURRENT_DATE - INTERVAL '1 day'";
+        }
         break;
       default:
         dateFilter = "AND DATE(t.created_at) = CURRENT_DATE";
