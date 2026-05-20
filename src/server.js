@@ -22,8 +22,15 @@ app.set('trust proxy', 1);
 // ===== SÉCURITÉ =====
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL === '*' ? '*' : (process.env.FRONTEND_URL || 'http://localhost:3000'),
-  credentials: process.env.FRONTEND_URL !== '*',
+  origin: function(origin, callback) {
+    const allowed = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',');
+    if (origin === undefined || allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, false);
+    }
+  },
+  credentials: true,
 }));
 
 // Rate limiting global
