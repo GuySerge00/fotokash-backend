@@ -306,4 +306,40 @@ router.get('/platform', async (req, res) => {
   }
 });
 
+
+// GET /api/photos/editing-config — Config retouche photo selon plan
+router.get('/editing-config', authMiddleware, async (req, res) => {
+  try {
+    // Toggle global
+    var globalCheck = await pool.query("SELECT value FROM app_settings WHERE key = 'photo_editing_enabled'");
+    var globalEnabled = globalCheck.rows[0] ? globalCheck.rows[0].value === 'true' : false;
+
+    if (!globalEnabled) {
+      return res.json({
+        enabled: false,
+        level: 'none',
+        tools: { crop: false, enhance: false, filters: false }
+      });
+    }
+
+    // Niveau du plan
+    var planCheck = await pool.query(
+      'SELECT photo_editing_level FROM subscription_plans WHERE id = $1',
+      [req.user.plan || 'free']
+    );
+    var level = planCheck.rows[0] ? planCheck.rows[0].photo_editing_level : 'none';
+
+    var tools = {
+      crop: level === 'basic' || level === 'standard' || level === 'full',
+      enhance: level === 'standard' || level === 'full',
+      filters: level === 'full'
+    };
+
+    res.json({ enabled: true, level: level, tools: tools });
+  } catch (err) {
+    console.error('Erreur editing config:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;

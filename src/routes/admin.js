@@ -375,7 +375,7 @@ router.get('/plans', async (req, res) => {
 router.put('/plans/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, price, commission_rate, photo_limit, event_limit, mobile_money_enabled } = req.body;
+    const { name, price, commission_rate, photo_limit, event_limit, mobile_money_enabled, photo_editing_level } = req.body;
 
     const result = await pool.query(
       `UPDATE subscription_plans 
@@ -384,10 +384,11 @@ router.put('/plans/:id', async (req, res) => {
            commission_rate = COALESCE($3, commission_rate),
            photo_limit = COALESCE($4, photo_limit),
            event_limit = $5,
-           mobile_money_enabled = COALESCE($6, mobile_money_enabled)
-       WHERE id = $7
+           mobile_money_enabled = COALESCE($6, mobile_money_enabled),
+           photo_editing_level = COALESCE($7, photo_editing_level)
+       WHERE id = $8
        RETURNING *`,
-      [name, price, commission_rate, photo_limit, event_limit, mobile_money_enabled, id]
+      [name, price, commission_rate, photo_limit, event_limit, mobile_money_enabled, photo_editing_level, id]
     );
 
     if (result.rows.length === 0) {
