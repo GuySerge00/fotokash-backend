@@ -686,6 +686,54 @@ router.patch('/photographers/:id/password', async (req, res) => {
 });
 
 
+
+
+// ============================================
+// GET /api/admin/withdrawals — Liste des demandes de retrait
+// ============================================
+router.get('/withdrawals', async (req, res) => {
+  try {
+    var status = req.query.status || 'all';
+    var where = status !== 'all' ? "WHERE w.status = '" + status + "'" : '';
+    var result = await pool.query(
+      'SELECT w.*, p.studio_name, p.email, p.phone as photographer_phone, p.plan FROM withdrawals w JOIN photographers p ON p.id = w.photographer_id ' + where + ' ORDER BY w.requested_at DESC'
+    );
+    res.json({ withdrawals: result.rows });
+  } catch (err) {
+    console.error('Erreur admin withdrawals:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// ============================================
+// PUT /api/admin/withdrawals/:id — Approuver/Rejeter un retrait
+// ============================================
+router.put('/withdrawals/:id', async (req, res) => {
+  try {
+    var { id } = req.params;
+    var { status, admin_note } = req.body;
+    if (!status || !['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Statut invalide. Utilisez approved ou rejected.' });
+    }
+    var result = await pool.query(
+      'UPDATE withdrawals SET status = $1, admin_note = $2, processed_at = NOW() WHERE id = $3 AND status = $4 RETURNING *',
+      [status, admin_note || null, id, 'pending']
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Demande introuvable ou deja traitee.' });
+    }
+    // Log admin
+    await pool.query(
+      "INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES ($1, $2, $3, $4, $5, $6)",
+      [status === 'approved' ? 'approve_withdrawal' : 'reject_withdrawal', 'withdrawal', id, req.user.id, req.user.studio_name, JSON.stringify({ amount: result.rows[0].amount, phone: result.rows[0].phone, note: admin_note })]
+    );
+    res.json({ message: 'Retrait ' + (status === 'approved' ? 'approuve' : 'rejete') + '.', withdrawal: result.rows[0] });
+  } catch (err) {
+    console.error('Erreur update withdrawal:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;
 
 // GET /api/admin/events/expiring - Evenements proches de l'expiration
