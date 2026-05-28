@@ -2,9 +2,20 @@ const express = require('express');
 const { pool } = require('../config/database');
 const { authMiddleware, ownsResource } = require('../middleware/auth');
 
+const archiver = require('archiver');
+const https = require('https');
+const http = require('http');
 const router = express.Router();
 
 // Générer un slug unique à partir du nom
+function generateOwnerPin() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function generateOwnerPin() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
 function generateSlug(name) {
   const base = name
     .toLowerCase()
@@ -78,10 +89,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const slug = generateSlug(name);
 
     const result = await pool.query(
-      `INSERT INTO events (photographer_id, name, slug, date, description, status)
-       VALUES ($1, $2, $3, $4, $5, 'live')
+      `INSERT INTO events (photographer_id, name, slug, date, description, status, owner_pin)
+       VALUES ($1, $2, $3, $4, $5, 'live', $6)
        RETURNING *`,
-      [req.user.id, name, slug, date || null, description || null]
+      [req.user.id, name, slug, date || null, description || null, generateOwnerPin()]
     );
 
     res.status(201).json({
@@ -215,6 +226,204 @@ router.get('/:id/stats', authMiddleware, ownsResource('event'), async (req, res)
   } catch (err) {
     console.error('Erreur stats :', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// POST /api/events/:slug/verify-owner — Vérifier le code propriétaire
+router.post('/:slug/verify-owner', async (req, res) => {
+  try {
+    const { pin } = req.body;
+    if (!pin || pin.length !== 6) {
+      return res.status(400).json({ error: 'Code PIN à 6 chiffres requis.' });
+    }
+    const eventResult = await pool.query(
+      `SELECT e.id, e.name, e.slug, e.owner_pin
+       FROM events e
+       WHERE e.slug = $1 AND e.is_public = true AND e.deleted_at IS NULL`,
+      [req.params.slug]
+    );
+    if (eventResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Événement introuvable.' });
+    }
+    const event = eventResult.rows[0];
+    if (event.owner_pin !== pin) {
+      return res.status(403).json({ error: 'Code incorrect.' });
+    }
+    // PIN correct — renvoyer toutes les photos HD
+    const photosResult = await pool.query(
+      `SELECT id, original_url, watermarked_url, thumbnail_url, qr_code_id
+       FROM photos
+       WHERE event_id = $1 AND is_processed = true
+       ORDER BY created_at ASC`,
+      [event.id]
+    );
+    // Enregistrer les téléchargements owner
+    for (const photo of photosResult.rows) {
+      await pool.query(
+        `INSERT INTO downloads (photo_id, download_type)
+         VALUES ($1, 'owner')
+         ON CONFLICT DO NOTHING`,
+        [photo.id]
+      ).catch(() => {});
+    }
+    res.json({
+      success: true,
+      photos: photosResult.rows.map(p => ({
+        id: p.id,
+        original_url: p.original_url,
+        thumbnail_url: p.thumbnail_url,
+        qr_code_id: p.qr_code_id
+      }))
+    });
+  } catch (err) {
+    console.error('Erreur verify-owner:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// POST /api/events/:slug/verify-owner — Vérifier le code propriétaire
+router.post('/:slug/verify-owner', async (req, res) => {
+  try {
+    const { pin } = req.body;
+    if (!pin || pin.length !== 6) {
+      return res.status(400).json({ error: 'Code PIN à 6 chiffres requis.' });
+    }
+    const eventResult = await pool.query(
+      `SELECT e.id, e.name, e.slug, e.owner_pin
+       FROM events e
+       WHERE e.slug = $1 AND e.is_public = true AND e.deleted_at IS NULL`,
+      [req.params.slug]
+    );
+    if (eventResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Événement introuvable.' });
+    }
+    const event = eventResult.rows[0];
+    if (event.owner_pin !== pin) {
+      return res.status(403).json({ error: 'Code incorrect.' });
+    }
+    // PIN correct — renvoyer toutes les photos HD
+    const photosResult = await pool.query(
+      `SELECT id, original_url, watermarked_url, thumbnail_url, qr_code_id
+       FROM photos
+       WHERE event_id = $1 AND is_processed = true
+       ORDER BY created_at ASC`,
+      [event.id]
+    );
+    // Enregistrer les téléchargements owner
+    for (const photo of photosResult.rows) {
+      await pool.query(
+        `INSERT INTO downloads (photo_id, download_type)
+         VALUES ($1, 'owner')
+         ON CONFLICT DO NOTHING`,
+        [photo.id]
+      ).catch(() => {});
+    }
+    res.json({
+      success: true,
+      photos: photosResult.rows.map(p => ({
+        id: p.id,
+        original_url: p.original_url,
+        thumbnail_url: p.thumbnail_url,
+        qr_code_id: p.qr_code_id
+      }))
+    });
+  } catch (err) {
+    console.error('Erreur verify-owner:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/events/:slug/owner-download-zip — Télécharger toutes les photos en ZIP (mode propriétaire)
+router.get('/:slug/owner-download-zip', async (req, res) => {
+  try {
+    const { pin } = req.query;
+    if (!pin || pin.length !== 6) {
+      return res.status(400).json({ error: 'Code PIN requis.' });
+    }
+    const eventResult = await pool.query(
+      `SELECT e.id, e.name, e.slug, e.owner_pin
+       FROM events e
+       WHERE e.slug = $1 AND e.is_public = true AND e.deleted_at IS NULL`,
+      [req.params.slug]
+    );
+    if (eventResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Événement introuvable.' });
+    }
+    const event = eventResult.rows[0];
+    if (event.owner_pin !== pin) {
+      return res.status(403).json({ error: 'Code incorrect.' });
+    }
+    const photosResult = await pool.query(
+      `SELECT id, original_url, qr_code_id
+       FROM photos
+       WHERE event_id = $1 AND is_processed = true
+       ORDER BY created_at ASC`,
+      [event.id]
+    );
+    if (photosResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Aucune photo trouvée.' });
+    }
+    const photos = photosResult.rows;
+
+    // Enregistrer les téléchargements owner
+    for (const photo of photos) {
+      await pool.query(
+        `INSERT INTO downloads (photo_id, download_type)
+         VALUES ($1, 'owner')
+         ON CONFLICT DO NOTHING`,
+        [photo.id]
+      ).catch(() => {});
+    }
+
+    // Préparer le ZIP en streaming
+    const slugClean = event.slug.replace(/[^a-z0-9-]/g, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="fotokash-' + slugClean + '.zip"');
+
+    const archive = new archiver.ZipArchive({ zlib: { level: 5 } });
+    archive.on('error', (err) => {
+      console.error('Erreur ZIP:', err);
+      if (!res.headersSent) res.status(500).json({ error: 'Erreur création ZIP.' });
+    });
+    archive.pipe(res);
+
+    // Ajouter chaque photo au ZIP
+    let index = 1;
+    for (const photo of photos) {
+      const url = photo.original_url;
+      if (!url) continue;
+      const fileName = 'photo-' + String(index).padStart(3, '0') + '.jpg';
+      try {
+        const imageBuffer = await new Promise((resolve, reject) => {
+          const client = url.startsWith('https') ? https : http;
+          client.get(url, (imgRes) => {
+            if (imgRes.statusCode === 301 || imgRes.statusCode === 302) {
+              // Follow redirect
+              client.get(imgRes.headers.location, (imgRes2) => {
+                const chunks = [];
+                imgRes2.on('data', (chunk) => chunks.push(chunk));
+                imgRes2.on('end', () => resolve(Buffer.concat(chunks)));
+                imgRes2.on('error', reject);
+              }).on('error', reject);
+              return;
+            }
+            const chunks = [];
+            imgRes.on('data', (chunk) => chunks.push(chunk));
+            imgRes.on('end', () => resolve(Buffer.concat(chunks)));
+            imgRes.on('error', reject);
+          }).on('error', reject);
+        });
+        archive.append(imageBuffer, { name: fileName });
+        index++;
+      } catch (err) {
+        console.error('Erreur téléchargement photo ' + photo.id + ':', err.message);
+      }
+    }
+
+    await archive.finalize();
+  } catch (err) {
+    console.error('Erreur owner-download-zip:', err);
+    if (!res.headersSent) res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
 
