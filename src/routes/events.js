@@ -427,4 +427,21 @@ router.get('/:slug/owner-download-zip', async (req, res) => {
   }
 });
 
+
+// PATCH /api/events/:id/cover — Definir une photo comme couverture de l'evenement
+router.patch('/:id/cover', authMiddleware, ownsResource('event'), async (req, res) => {
+  try {
+    const { photo_url } = req.body;
+    if (!photo_url) return res.status(400).json({ error: 'photo_url requis.' });
+    await pool.query(
+      'UPDATE events SET cover_url = $1, updated_at = NOW() WHERE id = $2',
+      [photo_url, req.params.id]
+    );
+    res.json({ success: true, cover_url: photo_url });
+  } catch (err) {
+    console.error('Erreur cover patch:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;

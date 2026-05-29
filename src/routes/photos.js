@@ -82,6 +82,13 @@ async function processOnePhoto(file, event_id, userId, wmText) {
     [event_id, userId, origUp.secure_url, wmUp.secure_url, thumbUp.secure_url, qr_code_id, qrCodeDataUrl, metadata.width, metadata.height, file.size, fileHash]
   );
 
+  // Cover auto : si l'evenement n'a pas encore de cover_url, on utilise la thumbnail de cette photo
+  try {
+    await pool.query(
+      'UPDATE events SET cover_url = $1, updated_at = NOW() WHERE id = $2 AND (cover_url IS NULL OR cover_url = $3)',
+      [thumbUp.secure_url, event_id, '']
+    );
+  } catch(e) { console.error('cover_url auto error:', e.message); }
   // Job facial
   faceQueue.add({ photoId: row.rows[0].id, eventId: event_id, imageUrl: origUp.secure_url });
 
