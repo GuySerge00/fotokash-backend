@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const { pool } = require('../config/database');
 
 const router = express.Router();
@@ -24,6 +25,33 @@ async function calculatePrice(photoCount) {
   }
 }
 
+// Vérifie la signature HMAC envoyée par le provider/agrégateur
+function verifyWebhookSignature(req) {
+  const signature = req.headers['x-webhook-signature'];
+  if (!signature) return false;
+
+  const secret = process.env.PAYMENT_WEBHOOK_SECRET;
+  if (!secret) {
+    console.error('PAYMENT_WEBHOOK_SECRET non défini dans .env');
+    return false;
+  }
+
+  const payload = JSON.stringify(req.body);
+  const expectedSignature = crypto
+    .createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expectedSignature)
+    );
+  } catch {
+    return false; // longueurs différentes = signature invalide
+  }
+}
+
 // POST /api/payments/initiate — Initier un paiement Mobile Money
 router.post('/initiate', async (req, res) => {
   try {
@@ -37,7 +65,6 @@ router.post('/initiate', async (req, res) => {
       return res.status(400).json({ error: 'Moyen de paiement invalide.' });
     }
 
-    // Vérifier que les photos existent et appartiennent à l'événement
     const photosCheck = await pool.query(
       'SELECT id FROM photos WHERE id = ANY($1) AND event_id = $2',
       [photo_ids, event_id]
@@ -47,7 +74,6 @@ router.post('/initiate', async (req, res) => {
       return res.status(400).json({ error: 'Certaines photos sont invalides.' });
     }
 
-    // Trouver le photographe propriétaire
     const eventResult = await pool.query(
       'SELECT photographer_id FROM events WHERE id = $1',
       [event_id]
@@ -55,7 +81,6 @@ router.post('/initiate', async (req, res) => {
 
     const amount = await calculatePrice(photo_ids.length);
 
-    // Créer la transaction en base (statut: pending)
     const transaction = await pool.query(
       `INSERT INTO transactions (event_id, photographer_id, client_phone, payment_method, amount, photos_purchased, status)
        VALUES ($1, $2, $3, $4, $5, $6, 'pending')
@@ -65,7 +90,6 @@ router.post('/initiate', async (req, res) => {
 
     const txId = transaction.rows[0].id;
 
-    // Appeler l'API du provider Mobile Money
     let providerResponse;
 
     try {
@@ -81,7 +105,6 @@ router.post('/initiate', async (req, res) => {
           break;
       }
     } catch (payErr) {
-      // Marquer la transaction comme échouée
       await pool.query(
         "UPDATE transactions SET status = 'failed' WHERE id = $1",
         [txId]
@@ -90,7 +113,6 @@ router.post('/initiate', async (req, res) => {
       return res.status(502).json({ error: 'Le service de paiement est indisponible. Réessayez.' });
     }
 
-    // Mettre à jour avec l'ID du provider
     await pool.query(
       'UPDATE transactions SET provider_transaction_id = $1 WHERE id = $2',
       [providerResponse?.transactionId || 'pending', txId]
@@ -111,9 +133,13 @@ router.post('/initiate', async (req, res) => {
 // POST /api/payments/callback — Webhook du provider Mobile Money
 router.post('/callback', async (req, res) => {
   try {
+    if (!verifyWebhookSignature(req)) {
+      console.warn('Webhook rejeté : signature invalide', req.ip);
+      return res.status(401).json({ error: 'Signature invalide.' });
+    }
+
     const { transaction_id, status, provider_id } = req.body;
 
-    // Trouver la transaction par l'ID du provider
     const tx = await pool.query(
       'SELECT id, status FROM transactions WHERE provider_transaction_id = $1 OR id = $2',
       [provider_id || '', transaction_id || '']
@@ -123,12 +149,17 @@ router.post('/callback', async (req, res) => {
       return res.status(404).json({ error: 'Transaction introuvable.' });
     }
 
+    if (tx.rows[0].status !== 'pending') {
+      console.log(`Webhook ignoré : transaction ${tx.rows[0].id} déjà au statut ${tx.rows[0].status}`);
+      return res.json({ message: 'Callback déjà traité.' });
+    }
+
     const newStatus = status === 'success' ? 'completed' : 'failed';
 
     await pool.query(
       `UPDATE transactions
        SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE NULL END
-       WHERE id = $2`,
+       WHERE id = $2 AND status = 'pending'`,
       [newStatus, tx.rows[0].id]
     );
 
@@ -193,7 +224,7 @@ async function initiateMTNMomo(phone, amount, orderId) {
       headers: {
         'X-Reference-Id': orderId,
         'Ocp-Apim-Subscription-Key': process.env.MTN_MOMO_API_KEY,
-        'X-Target-Environment': 'sandbox',
+        'X-Target-Environment': process.env.MTN_MOMO_ENVIRONMENT || 'sandbox',
       },
     }
   );
