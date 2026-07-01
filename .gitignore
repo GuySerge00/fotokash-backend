@@ -8,5 +8,6 @@ check-*.js
 fix-*.js
 write-*.js
 selfie-test.jpg
-migration_admin_panel.sql*.before-webhook-fix
-*.bak
+migration_admin_panel.sql
+*.before-webhook-fix
+src/routes/*.before-*
