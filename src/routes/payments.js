@@ -76,16 +76,22 @@ router.post('/initiate', async (req, res) => {
       return res.status(502).json({ error: 'Le service de paiement est indisponible. Réessayez.' });
     }
 
+    const reference = (providerResponse && providerResponse.transactionId) || 'pending';
+    const paymentUrl = (providerResponse && providerResponse.raw && (providerResponse.raw.payment_url || providerResponse.raw.checkout_url)) || null;
+
     await pool.query(
       'UPDATE transactions SET reference = $1 WHERE id = $2',
-      [(providerResponse && providerResponse.transactionId) || 'pending', txId]
+      [reference, txId]
     );
 
     res.json({
       transaction_id: txId,
       amount: amount,
       status: 'pending',
-      message: 'Validez le paiement de ' + amount + ' FCFA sur votre telephone.',
+      payment_url: paymentUrl,
+      message: paymentUrl
+        ? 'Ouvrez la fenetre de paiement pour valider votre transaction.'
+        : 'Validez le paiement de ' + amount + ' FCFA sur votre telephone.',
     });
   } catch (err) {
     console.error('Erreur initiation paiement :', err);
@@ -119,8 +125,8 @@ router.post('/callback', async (req, res) => {
     }
 
     await pool.query(
-      "UPDATE transactions SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE NULL END WHERE id = $2 AND status = 'pending'",
-      [newStatus, tx.rows[0].id]
+      "UPDATE transactions SET status = $1, completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE NULL END WHERE id = $2 AND status = 'pending'",
+      [newStatus, tx.rows[0].id, newStatus]
     );
 
     res.json({ message: 'Callback traite.' });
@@ -133,7 +139,7 @@ router.post('/callback', async (req, res) => {
 router.get('/:id/status', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, amount, status, payment_method, provider, photos_purchased, completed_at FROM transactions WHERE id = $1',
+      'SELECT id, amount, status, payment_method, provider, reference, photos_purchased, completed_at FROM transactions WHERE id = $1',
       [req.params.id]
     );
 
@@ -141,7 +147,37 @@ router.get('/:id/status', async (req, res) => {
       return res.status(404).json({ error: 'Transaction introuvable.' });
     }
 
-    res.json({ transaction: result.rows[0] });
+    let tx = result.rows[0];
+
+    if (tx.status === 'pending' && tx.reference && tx.reference !== 'pending') {
+      try {
+        const liveStatus = await paymentProvider.checkPaymentStatus(tx.reference);
+        if (['completed', 'failed', 'cancelled', 'expired'].indexOf(liveStatus.status) !== -1) {
+          const mappedStatus = liveStatus.status === 'completed' ? 'completed' : 'failed';
+          const updated = await pool.query(
+            "UPDATE transactions SET status = $1, completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE NULL END WHERE id = $2 AND status = 'pending' RETURNING id, amount, status, payment_method, provider, photos_purchased, completed_at",
+            [mappedStatus, tx.id, mappedStatus]
+          );
+          if (updated.rows.length > 0) {
+            tx = updated.rows[0];
+          }
+        }
+      } catch (checkErr) {
+        console.error('Verification active du statut echouee :', checkErr.message);
+      }
+    }
+
+    res.json({
+      transaction: {
+        id: tx.id,
+        amount: tx.amount,
+        status: tx.status,
+        payment_method: tx.payment_method,
+        provider: tx.provider,
+        photos_purchased: tx.photos_purchased,
+        completed_at: tx.completed_at,
+      },
+    });
   } catch (err) {
     console.error('Erreur statut :', err);
     res.status(500).json({ error: 'Erreur serveur.' });

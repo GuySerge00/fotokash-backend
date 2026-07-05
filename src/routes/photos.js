@@ -173,9 +173,29 @@ router.get('/event/:eventId/public', async (req, res) => {
 
 router.get('/qr/:code', async (req, res) => {
   try {
-    var result = await pool.query('SELECT p.id, p.original_url, p.watermarked_url, p.thumbnail_url, p.qr_code_id, e.name as event_name, e.slug as event_slug FROM photos p JOIN events e ON e.id = p.event_id WHERE p.qr_code_id = $1', [req.params.code]);
+    var result = await pool.query(
+      `SELECT p.id, p.original_url, p.watermarked_url, p.thumbnail_url, p.qr_code_id,
+              e.name as event_name, e.slug as event_slug, sp.mobile_money_enabled
+       FROM photos p
+       JOIN events e ON e.id = p.event_id
+       JOIN photographers ph ON ph.id = e.photographer_id
+       LEFT JOIN subscription_plans sp ON sp.id = ph.plan
+       WHERE p.qr_code_id = $1`,
+      [req.params.code]
+    );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Photo introuvable.' });
-    res.json({ photo: result.rows[0] });
+    var row = result.rows[0];
+    var isFree = !row.mobile_money_enabled;
+    var photo = {
+      id: row.id,
+      watermarked_url: row.watermarked_url,
+      thumbnail_url: row.thumbnail_url,
+      qr_code_id: row.qr_code_id,
+      event_name: row.event_name,
+      event_slug: row.event_slug,
+    };
+    if (isFree) photo.original_url = row.original_url;
+    res.json({ photo });
   } catch (err) { res.status(500).json({ error: 'Erreur serveur.' }); }
 });
 

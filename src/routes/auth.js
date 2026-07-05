@@ -4,7 +4,16 @@ const jwt = require('jsonwebtoken');
 const { pool } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 tentatives max par IP
+  message: { error: 'Trop de tentatives de connexion. Réessayez dans 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // POST /api/auth/signup — Inscription photographe
 router.post('/signup', async (req, res) => {
@@ -61,7 +70,7 @@ router.post('/signup', async (req, res) => {
 });
 
 // POST /api/auth/login — Connexion
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -114,15 +123,11 @@ router.get('/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit, p.role, p.status, p.created_at,
-              COUNT(DISTINCT ph.id) as total_photos,
-              COUNT(DISTINCT e.id) as total_events,
-              COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as total_revenue
+              COALESCE((SELECT COUNT(*) FROM photos ph WHERE ph.photographer_id = p.id), 0) as total_photos,
+              COALESCE((SELECT COUNT(*) FROM events e WHERE e.photographer_id = p.id), 0) as total_events,
+              COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_revenue
        FROM photographers p
-       LEFT JOIN photos ph ON ph.photographer_id = p.id
-       LEFT JOIN events e ON e.photographer_id = p.id
-       LEFT JOIN transactions t ON t.photographer_id = p.id
-       WHERE p.id = $1
-       GROUP BY p.id`,
+       WHERE p.id = $1`,
       [req.user.id]
     );
 

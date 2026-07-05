@@ -118,7 +118,7 @@ app.use((req, res) => {
 console.log('ENV VARS:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('PG') || k.includes('NODE')));
 // ===== CRON JOBS =====
 startEventCleanupJob();
-app.listen(PORT, () => {
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`
   ╔═══════════════════════════════════════════╗
   ║         FotoKash API Server               ║

@@ -176,27 +176,26 @@ router.get('/photographers', async (req, res) => {
     if (status === 'active') statusFilter = "AND p.status = 'active'";
     if (status === 'inactive') statusFilter = "AND p.status = 'inactive'";
 
-    const searchFilter = search
-      ? `AND (LOWER(p.studio_name) LIKE LOWER('%${search.replace(/'/g, "''")}%') OR LOWER(p.email) LIKE LOWER('%${search.replace(/'/g, "''")}%'))`
-      : '';
+    const params = [];
+    let searchFilter = '';
+    if (search) {
+      params.push('%' + search + '%');
+      searchFilter = `AND (LOWER(p.studio_name) LIKE LOWER(${params.length}) OR LOWER(p.email) LIKE LOWER(${params.length}))`;
+    }
 
     const query = `
-      SELECT 
+      SELECT
         p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit,
         p.role, p.status, p.created_at,
-        COUNT(DISTINCT e.id) as total_events,
-        COUNT(DISTINCT ph.id) as total_photos,
-        COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as total_revenue,
-        MAX(p.created_at) as last_activity
+        COALESCE((SELECT COUNT(*) FROM events e WHERE e.photographer_id = p.id AND e.deleted_at IS NULL), 0) as total_events,
+        COALESCE((SELECT COUNT(*) FROM photos ph WHERE ph.photographer_id = p.id), 0) as total_photos,
+        COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_revenue,
+        p.created_at as last_activity
       FROM photographers p
-      LEFT JOIN events e ON e.photographer_id = p.id AND e.deleted_at IS NULL
-      LEFT JOIN photos ph ON ph.photographer_id = p.id
-      LEFT JOIN transactions t ON t.photographer_id = p.id
       WHERE (p.role != 'admin' OR p.role IS NULL) ${statusFilter} ${searchFilter}
-      GROUP BY p.id
       ORDER BY p.created_at DESC
     `;
-    const result = await pool.query(query);
+    const result = await pool.query(query, params);
 
     res.json({
       photographers: result.rows.map(row => ({
@@ -281,19 +280,15 @@ router.get('/photographers/:id', async (req, res) => {
     const { id } = req.params;
 
     const photographerQuery = `
-      SELECT 
+      SELECT
         p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit,
         p.role, p.status, p.created_at, p.updated_at,
-        COUNT(DISTINCT e.id) as total_events,
-        COUNT(DISTINCT ph.id) as total_photos,
-        COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as total_revenue,
-        COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.id END) as total_sales
+        COALESCE((SELECT COUNT(*) FROM events e WHERE e.photographer_id = p.id AND e.deleted_at IS NULL), 0) as total_events,
+        COALESCE((SELECT COUNT(*) FROM photos ph WHERE ph.photographer_id = p.id), 0) as total_photos,
+        COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_revenue,
+        COALESCE((SELECT COUNT(*) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_sales
       FROM photographers p
-      LEFT JOIN events e ON e.photographer_id = p.id AND e.deleted_at IS NULL
-      LEFT JOIN photos ph ON ph.photographer_id = p.id
-      LEFT JOIN transactions t ON t.photographer_id = p.id
       WHERE p.id = $1
-      GROUP BY p.id
     `;
     const result = await pool.query(photographerQuery, [id]);
 
@@ -527,16 +522,25 @@ router.get('/logs', async (req, res) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
     let actionFilter = '';
-    if (action) actionFilter = `WHERE action = '${action.replace(/'/g, "''")}'`;
+    let baseParams = [];
+    if (action) {
+      actionFilter = 'WHERE action = $1';
+      baseParams.push(action);
+    }
 
-    const countResult = await pool.query(`SELECT COUNT(*) as total FROM admin_logs ${actionFilter}`);
+    const countResult = await pool.query(
+      `SELECT COUNT(*) as total FROM admin_logs ${actionFilter}`,
+      baseParams
+    );
+
+    const limitParamIndex = baseParams.length + 1;
+    const offsetParamIndex = baseParams.length + 2;
     const result = await pool.query(
-      `SELECT * FROM admin_logs ${actionFilter} ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-      [parseInt(limit), offset]
+      `SELECT * FROM admin_logs ${actionFilter} ORDER BY created_at DESC LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
+      [...baseParams, parseInt(limit), offset]
     );
 
     const actions = await pool.query('SELECT DISTINCT action FROM admin_logs ORDER BY action');
-
     res.json({
       logs: result.rows,
       total: parseInt(countResult.rows[0].total),

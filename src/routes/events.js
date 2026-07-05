@@ -5,16 +5,22 @@ const { authMiddleware, ownsResource } = require('../middleware/auth');
 const archiver = require('archiver');
 const https = require('https');
 const http = require('http');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
+
+const ownerPinLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 heure
+  max: 15, // 15 tentatives max par IP par heure
+  message: { error: 'Trop de tentatives. Réessayez dans une heure.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Générer un slug unique à partir du nom
 function generateOwnerPin() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-function generateOwnerPin() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 function generateSlug(name) {
   const base = name
@@ -230,59 +236,7 @@ router.get('/:id/stats', authMiddleware, ownsResource('event'), async (req, res)
 });
 
 // POST /api/events/:slug/verify-owner — Vérifier le code propriétaire
-router.post('/:slug/verify-owner', async (req, res) => {
-  try {
-    const { pin } = req.body;
-    if (!pin || pin.length !== 6) {
-      return res.status(400).json({ error: 'Code PIN à 6 chiffres requis.' });
-    }
-    const eventResult = await pool.query(
-      `SELECT e.id, e.name, e.slug, e.owner_pin
-       FROM events e
-       WHERE e.slug = $1 AND e.is_public = true AND e.deleted_at IS NULL`,
-      [req.params.slug]
-    );
-    if (eventResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Événement introuvable.' });
-    }
-    const event = eventResult.rows[0];
-    if (event.owner_pin !== pin) {
-      return res.status(403).json({ error: 'Code incorrect.' });
-    }
-    // PIN correct — renvoyer toutes les photos HD
-    const photosResult = await pool.query(
-      `SELECT id, original_url, watermarked_url, thumbnail_url, qr_code_id
-       FROM photos
-       WHERE event_id = $1 AND is_processed = true
-       ORDER BY created_at ASC`,
-      [event.id]
-    );
-    // Enregistrer les téléchargements owner
-    for (const photo of photosResult.rows) {
-      await pool.query(
-        `INSERT INTO downloads (photo_id, download_type)
-         VALUES ($1, 'owner')
-         ON CONFLICT DO NOTHING`,
-        [photo.id]
-      ).catch(() => {});
-    }
-    res.json({
-      success: true,
-      photos: photosResult.rows.map(p => ({
-        id: p.id,
-        original_url: p.original_url,
-        thumbnail_url: p.thumbnail_url,
-        qr_code_id: p.qr_code_id
-      }))
-    });
-  } catch (err) {
-    console.error('Erreur verify-owner:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
-  }
-});
-
-// POST /api/events/:slug/verify-owner — Vérifier le code propriétaire
-router.post('/:slug/verify-owner', async (req, res) => {
+router.post('/:slug/verify-owner', ownerPinLimiter, async (req, res) => {
   try {
     const { pin } = req.body;
     if (!pin || pin.length !== 6) {
@@ -334,7 +288,7 @@ router.post('/:slug/verify-owner', async (req, res) => {
 });
 
 // GET /api/events/:slug/owner-download-zip — Télécharger toutes les photos en ZIP (mode propriétaire)
-router.get('/:slug/owner-download-zip', async (req, res) => {
+router.get('/:slug/owner-download-zip', ownerPinLimiter, async (req, res) => {
   try {
     const { pin } = req.query;
     if (!pin || pin.length !== 6) {
