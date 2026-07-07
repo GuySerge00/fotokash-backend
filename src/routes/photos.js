@@ -29,7 +29,7 @@ function uploadToCloudinary(buffer, options) {
 // ============================================================
 async function processOnePhoto(file, event_id, userId, wmText) {
   var fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
-  var dupCheck = await pool.query('SELECT id FROM photos WHERE event_id = $1 AND file_hash = $2', [event_id, fileHash]);
+  var dupCheck = await pool.query('SELECT id FROM photos WHERE event_id = $1 AND file_hash = $2 AND deleted_at IS NULL', [event_id, fileHash]);
   if (dupCheck.rows.length > 0) {
     console.log('Doublon detecte: ' + file.originalname);
     return null; // doublon
@@ -108,7 +108,7 @@ router.post('/upload', authMiddleware, upload.array('photos', 50), async (req, r
     // Verifier la limite de photos du plan
     var planCheck = await pool.query('SELECT sp.photo_limit FROM subscription_plans sp WHERE sp.id = $1', [req.user.plan || 'free']);
     var photoLimit = planCheck.rows[0] ? planCheck.rows[0].photo_limit : 100;
-    var currentPhotos = await pool.query('SELECT COUNT(*) as count FROM photos WHERE event_id = $1', [event_id]);
+    var currentPhotos = await pool.query('SELECT COUNT(*) as count FROM photos WHERE event_id = $1 AND deleted_at IS NULL', [event_id]);
     var currentCount = parseInt(currentPhotos.rows[0].count);
     var newCount = req.files.length;
     if (currentCount + newCount > photoLimit) {
@@ -166,7 +166,7 @@ router.get('/event/:eventId/public', async (req, res) => {
     var fields = isFree
       ? 'id, original_url, watermarked_url, thumbnail_url, qr_code_id, faces_count, created_at'
       : 'id, watermarked_url, thumbnail_url, qr_code_id, faces_count, created_at';
-    var result = await pool.query('SELECT ' + fields + ' FROM photos WHERE event_id = $1 ORDER BY created_at DESC', [req.params.eventId]);
+    var result = await pool.query('SELECT ' + fields + ' FROM photos WHERE event_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC', [req.params.eventId]);
     res.json({ photos: result.rows });
   } catch (err) { res.status(500).json({ error: 'Erreur serveur.' }); }
 });
@@ -180,7 +180,7 @@ router.get('/qr/:code', async (req, res) => {
        JOIN events e ON e.id = p.event_id
        JOIN photographers ph ON ph.id = e.photographer_id
        LEFT JOIN subscription_plans sp ON sp.id = ph.plan
-       WHERE p.qr_code_id = $1`,
+       WHERE p.qr_code_id = $1 AND p.deleted_at IS NULL`,
       [req.params.code]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Photo introuvable.' });
@@ -223,7 +223,7 @@ router.post('/face-search', upload.single('selfie'), async (req, res) => {
     var thresholdRes = await pool.query("SELECT value FROM app_settings WHERE key = 'face_search_threshold'");
     var faceThreshold = thresholdRes.rows[0] ? parseFloat(thresholdRes.rows[0].value) : 0.6;
     console.log('Face search threshold:', faceThreshold);
-    var result = await pool.query('SELECT DISTINCT ' + photoFields + ', 1 - (fe.embedding <=> $1::vector) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND 1 - (fe.embedding <=> $1::vector) > ' + faceThreshold + ' ORDER BY similarity DESC LIMIT 50', [embeddingStr, event_id]);
+    var result = await pool.query('SELECT DISTINCT ' + photoFields + ', 1 - (fe.embedding <=> $1::vector) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND p.deleted_at IS NULL AND 1 - (fe.embedding <=> $1::vector) > ' + faceThreshold + ' ORDER BY similarity DESC LIMIT 50', [embeddingStr, event_id]);
     console.log('Face search results:', result.rows.length, 'matches found');
     res.json({ matched_photos: result.rows, count: result.rows.length });
   } catch (err) { console.error('Face search error:', err.message); res.status(500).json({ error: 'Erreur recherche.' }); }
@@ -235,7 +235,7 @@ router.get('/:id/download', async (req, res) => {
     if (!transaction_id) return res.status(400).json({ error: 'ID transaction requis.' });
     var txCheck = await pool.query('SELECT id FROM transactions WHERE id = $1 AND status = $2 AND $3 = ANY(photos_purchased)', [transaction_id, 'completed', req.params.id]);
     if (txCheck.rows.length === 0) return res.status(403).json({ error: 'Paiement non verifie.' });
-    var photo = await pool.query('SELECT original_url FROM photos WHERE id = $1', [req.params.id]);
+    var photo = await pool.query('SELECT original_url FROM photos WHERE id = $1 AND deleted_at IS NULL', [req.params.id]);
     if (photo.rows.length === 0) return res.status(404).json({ error: 'Photo introuvable.' });
     await pool.query('INSERT INTO downloads (transaction_id, photo_id, ip_address) VALUES ($1, $2, $3)', [transaction_id, req.params.id, req.ip]);
     res.json({ download_url: photo.rows[0].original_url });
@@ -270,7 +270,7 @@ router.post('/free-download', async (req, res) => {
     }
 
     for (var i = 0; i < photoIds.length; i++) {
-      var photo = await pool.query('SELECT id, original_url FROM photos WHERE id = $1', [photoIds[i]]);
+      var photo = await pool.query('SELECT id, original_url FROM photos WHERE id = $1 AND deleted_at IS NULL', [photoIds[i]]);
       if (photo.rows.length > 0) {
         await pool.query(
           'INSERT INTO downloads (transaction_id, photo_id, ip_address) VALUES ($1, $2, $3)',
@@ -281,7 +281,7 @@ router.post('/free-download', async (req, res) => {
 
     // Recuperer les URLs originales
     var result = await pool.query(
-      'SELECT id, original_url FROM photos WHERE id = ANY($1)',
+      'SELECT id, original_url FROM photos WHERE id = ANY($1) AND deleted_at IS NULL',
       [photoIds]
     );
 
@@ -295,20 +295,22 @@ router.post('/free-download', async (req, res) => {
   }
 });
 
-// DELETE /api/photos/:id - Supprimer une photo
-router.delete('/:id', async (req, res) => {
+// DELETE /api/photos/:id - Supprimer une photo (soft delete, conserve l'historique)
+router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     var photoId = req.params.id;
-    // Supprimer les face_embeddings liees
-    await pool.query('DELETE FROM face_embeddings WHERE photo_id = $1', [photoId]);
-    // Supprimer les downloads lies
-    await pool.query('DELETE FROM downloads WHERE photo_id = $1', [photoId]);
-    // Supprimer la photo
-    var result = await pool.query('DELETE FROM photos WHERE id = $1 RETURNING id', [photoId]);
+    var result = await pool.query(
+      'UPDATE photos SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
+      [photoId]
+    );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Photo introuvable.' });
     }
     res.json({ message: 'Photo supprimee.' });
+    var { purgeCloudinaryForPhotos } = require('../utils/cloudinaryCleanup');
+    purgeCloudinaryForPhotos([photoId]).catch(function(err) {
+      console.error('[CLOUDINARY-PURGE] Erreur non bloquante:', err.message);
+    });
   } catch (err) {
     console.error('Erreur suppression photo:', err);
     res.status(500).json({ error: 'Erreur serveur.' });

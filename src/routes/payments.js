@@ -29,6 +29,8 @@ router.post('/initiate', async (req, res) => {
     const photo_ids = req.body.photo_ids;
     const payment_method = req.body.payment_method;
     const phone_number = req.body.phone_number;
+    const context = req.body.context === 'live' ? 'live' : 'client';
+    const basePath = context === 'live' ? '/live/' : '/e/';
 
     if (!event_id || !photo_ids || !photo_ids.length || !payment_method || !phone_number) {
       return res.status(400).json({ error: 'Tous les champs sont requis.' });
@@ -39,7 +41,7 @@ router.post('/initiate', async (req, res) => {
     }
 
     const photosCheck = await pool.query(
-      'SELECT id FROM photos WHERE id = ANY($1) AND event_id = $2',
+      'SELECT id FROM photos WHERE id = ANY($1) AND event_id = $2 AND deleted_at IS NULL',
       [photo_ids, event_id]
     );
 
@@ -48,7 +50,7 @@ router.post('/initiate', async (req, res) => {
     }
 
     const eventResult = await pool.query(
-      'SELECT photographer_id FROM events WHERE id = $1',
+      'SELECT photographer_id, slug FROM events WHERE id = $1',
       [event_id]
     );
 
@@ -69,6 +71,8 @@ router.post('/initiate', async (req, res) => {
         phone: phone_number,
         orderId: txId,
         method: payment_method,
+        slug: eventResult.rows[0].slug,
+        basePath: basePath,
       });
     } catch (payErr) {
       await pool.query("UPDATE transactions SET status = 'failed' WHERE id = $1", [txId]);

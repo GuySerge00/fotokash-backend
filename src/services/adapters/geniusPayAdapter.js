@@ -31,6 +31,11 @@ async function initiatePayment(params) {
   const phone = params.phone;
   const orderId = params.orderId;
   const method = params.method;
+  const slug = params.slug;
+  const basePath = params.basePath || '/e/';
+
+  const frontendUrl = (process.env.FRONTEND_URL || '').split(',')[0].trim() || 'https://fotokash.com';
+  const returnBase = frontendUrl + basePath + slug + '?tx=' + orderId + '&payment=';
 
   const body = {
     amount: amount,
@@ -43,6 +48,8 @@ async function initiatePayment(params) {
     metadata: {
       order_id: orderId,
     },
+    success_url: returnBase + 'success',
+    error_url: returnBase + 'error',
   };
 
   let response;

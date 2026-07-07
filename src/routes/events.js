@@ -180,21 +180,36 @@ router.put('/:id', authMiddleware, ownsResource('event'), async (req, res) => {
 
 // DELETE /api/events/:id — Soft delete d'un événement (garde les infos photographe)
 router.delete('/:id', authMiddleware, ownsResource('event'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const eventId = req.params.id;
-    // Soft delete : marquer comme supprime + nettoyer le contenu
-    await pool.query('DELETE FROM live_matches WHERE visitor_id IN (SELECT id FROM live_visitors WHERE event_id = $1)', [eventId]);
-    await pool.query('DELETE FROM live_visitors WHERE event_id = $1', [eventId]);
-    await pool.query('DELETE FROM face_embeddings WHERE event_id = $1', [eventId]);
-    // Downloads conservés pour l'historique des stats admin
-    await pool.query('DELETE FROM transactions WHERE event_id = $1', [eventId]);
-    await pool.query('DELETE FROM photos WHERE event_id = $1', [eventId]);
-    // Marquer l'evenement comme supprime au lieu de le supprimer
-    await pool.query("UPDATE events SET deleted_at = NOW(), is_public = false WHERE id = $1", [eventId]);
+    await client.query('BEGIN');
+
+    await client.query('DELETE FROM live_matches WHERE visitor_id IN (SELECT id FROM live_visitors WHERE event_id = $1)', [eventId]);
+    await client.query('DELETE FROM live_visitors WHERE event_id = $1', [eventId]);
+    await client.query('DELETE FROM face_embeddings WHERE event_id = $1', [eventId]);
+
+    // transactions et downloads conservés pour toujours (historique stats admin + photographe)
+    // photos en soft-delete (pas de suppression physique en base, respecte la FK downloads_photo_id_fkey)
+    const photosToPurge = await client.query('SELECT id FROM photos WHERE event_id = $1 AND deleted_at IS NULL', [eventId]);
+    await client.query('UPDATE photos SET deleted_at = NOW() WHERE event_id = $1', [eventId]);
+
+    await client.query("UPDATE events SET deleted_at = NOW(), is_public = false WHERE id = $1", [eventId]);
+
+    await client.query('COMMIT');
     res.json({ message: 'Événement et contenu supprimés.' });
+
+    const { purgeCloudinaryForPhotos } = require('../utils/cloudinaryCleanup');
+    const photoIdsToPurge = photosToPurge.rows.map(r => r.id);
+    purgeCloudinaryForPhotos(photoIdsToPurge).catch(err => {
+      console.error('[CLOUDINARY-PURGE] Erreur non bloquante:', err.message);
+    });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Erreur suppression :', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  } finally {
+    client.release();
   }
 });
 // GET /api/events/:id/stats — Stats détaillées d'un événement
@@ -259,7 +274,7 @@ router.post('/:slug/verify-owner', ownerPinLimiter, async (req, res) => {
     const photosResult = await pool.query(
       `SELECT id, original_url, watermarked_url, thumbnail_url, qr_code_id
        FROM photos
-       WHERE event_id = $1 AND is_processed = true
+       WHERE event_id = $1 AND is_processed = true AND deleted_at IS NULL
        ORDER BY created_at ASC`,
       [event.id]
     );
@@ -310,7 +325,7 @@ router.get('/:slug/owner-download-zip', ownerPinLimiter, async (req, res) => {
     const photosResult = await pool.query(
       `SELECT id, original_url, qr_code_id
        FROM photos
-       WHERE event_id = $1 AND is_processed = true
+       WHERE event_id = $1 AND is_processed = true AND deleted_at IS NULL
        ORDER BY created_at ASC`,
       [event.id]
     );

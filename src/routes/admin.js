@@ -67,17 +67,17 @@ router.get('/dashboard/stats', async (req, res) => {
     );
 
     const eventsResult = await pool.query(
-      `SELECT COUNT(*) as active_events FROM events WHERE status = 'active'`
+      `SELECT COUNT(*) as active_events FROM events WHERE status = 'live' AND deleted_at IS NULL`
     );
     const newEventsResult = await pool.query(
-      `SELECT COUNT(*) as new_events FROM events e WHERE 1=1 ${dateFilter.replace(/t\./g, 'e.')}`
+      `SELECT COUNT(*) as new_events FROM events e WHERE e.deleted_at IS NULL ${dateFilter.replace(/t\./g, 'e.')}`
     );
 
     const photographersResult = await pool.query(
-      `SELECT COUNT(*) as total_photographers, COUNT(*) FILTER (WHERE status = 'active' OR status IS NULL) as active_photographers FROM photographers WHERE role != 'admin' OR role IS NULL`
+      `SELECT COUNT(*) as total_photographers, COUNT(*) FILTER (WHERE status = 'active' OR status IS NULL) as active_photographers FROM photographers WHERE (role != 'admin' OR role IS NULL) AND deleted_at IS NULL`
     );
     const newPhotographersResult = await pool.query(
-      `SELECT COUNT(*) as new_photographers FROM photographers p WHERE (role != 'admin' OR role IS NULL) ${dateFilter.replace(/t\./g, 'p.')}`
+      `SELECT COUNT(*) as new_photographers FROM photographers p WHERE (role != 'admin' OR role IS NULL) AND p.deleted_at IS NULL ${dateFilter.replace(/t\./g, 'p.')}`
     );
 
     const currentRevenue = parseFloat(revenueResult.rows[0].total_revenue);
@@ -192,7 +192,7 @@ router.get('/photographers', async (req, res) => {
         COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_revenue,
         p.created_at as last_activity
       FROM photographers p
-      WHERE (p.role != 'admin' OR p.role IS NULL) ${statusFilter} ${searchFilter}
+      WHERE (p.role != 'admin' OR p.role IS NULL) AND p.deleted_at IS NULL ${statusFilter} ${searchFilter}
       ORDER BY p.created_at DESC
     `;
     const result = await pool.query(query, params);
@@ -625,37 +625,45 @@ router.put('/settings', async (req, res) => {
 // Supprimer un photographe et tout son contenu
 // ============================================
 router.delete('/photographers/:id', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-
-    // Vérifier que ce n'est pas un admin
     const check = await pool.query('SELECT id, role, studio_name FROM photographers WHERE id = $1', [id]);
     if (check.rows.length === 0) {
+      client.release();
       return res.status(404).json({ error: 'Photographe introuvable.' });
     }
     if (check.rows[0].role === 'admin') {
+      client.release();
       return res.status(403).json({ error: 'Impossible de supprimer un compte admin.' });
     }
-
     const name = check.rows[0].studio_name;
 
-    // Supprimer dans l'ordre pour respecter les foreign keys
-    await pool.query('DELETE FROM downloads WHERE transaction_id IN (SELECT id FROM transactions WHERE photographer_id = $1)', [id]);
-    await pool.query('DELETE FROM face_embeddings WHERE event_id IN (SELECT id FROM events WHERE photographer_id = $1)', [id]);
-    await pool.query('DELETE FROM transactions WHERE photographer_id = $1', [id]);
-    await pool.query('DELETE FROM photos WHERE photographer_id = $1', [id]);
-    await pool.query('DELETE FROM events WHERE photographer_id = $1', [id]);
-    await pool.query('DELETE FROM photographers WHERE id = $1', [id]);
+    await client.query('BEGIN');
+    // Soft delete : compte, events et photos marques supprimes.
+    // transactions, downloads, withdrawals conserves pour toujours (historique stats admin).
+    await client.query('DELETE FROM face_embeddings WHERE event_id IN (SELECT id FROM events WHERE photographer_id = $1)', [id]);
+    const photosToPurge = await client.query('SELECT id FROM photos WHERE photographer_id = $1 AND deleted_at IS NULL', [id]);
+    await client.query('UPDATE photos SET deleted_at = NOW() WHERE photographer_id = $1', [id]);
+    await client.query("UPDATE events SET deleted_at = NOW(), is_public = false WHERE photographer_id = $1", [id]);
+    await client.query("UPDATE photographers SET deleted_at = NOW(), status = 'inactive' WHERE id = $1", [id]);
+    await client.query('COMMIT');
+    client.release();
 
-    // Log
+    const { purgeCloudinaryForPhotos } = require('../utils/cloudinaryCleanup');
+    const photoIdsToPurge = photosToPurge.rows.map(r => r.id);
+    purgeCloudinaryForPhotos(photoIdsToPurge).catch(err => {
+      console.error('[CLOUDINARY-PURGE] Erreur non bloquante:', err.message);
+    });
+
     await pool.query(
-      `INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      'INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES ($1, $2, $3, $4, $5, $6)',
       ['photographer_deleted', 'photographer', id, req.user.id, req.user.studio_name, JSON.stringify({ deleted_name: name })]
     );
-
-    res.json({ message: `Photographe "${name}" supprimé avec tout son contenu.` });
+    res.json({ message: 'Photographe "' + name + '" supprime (compte et contenu desactives, historique conserve).' });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
     console.error('Erreur suppression photographe:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -764,8 +772,8 @@ router.get('/events/expiring', async (req, res) => {
 // POST /api/admin/events/cleanup - Declencher le nettoyage manuellement
 router.post('/events/cleanup', async (req, res) => {
   try {
-    const { cleanupExpiredEvents } = require('../jobs/cleanupEvents');
-    const result = await cleanupExpiredEvents();
+    const { runEventCleanup } = require('../jobs/eventCleanup');
+    const result = await runEventCleanup();
     res.json(result);
   } catch (err) {
     console.error("Erreur cleanup:", err);

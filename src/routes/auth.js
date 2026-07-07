@@ -79,7 +79,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status FROM photographers WHERE email = $1',
+      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status, deleted_at FROM photographers WHERE email = $1',
       [email.toLowerCase()]
     );
 
@@ -89,8 +89,8 @@ router.post('/login', loginLimiter, async (req, res) => {
 
     const photographer = result.rows[0];
 
-    // Point 3 : Bloquer la connexion si compte désactivé
-    if (photographer.status === 'inactive') {
+    // Bloquer la connexion si compte désactivé ou supprimé
+    if (photographer.status === 'inactive' || photographer.deleted_at) {
       return res.status(403).json({ error: 'Votre compte a été désactivé. Contactez l\'administrateur.' });
     }
 
