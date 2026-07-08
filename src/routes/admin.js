@@ -29,16 +29,18 @@ router.get('/dashboard/stats', async (req, res) => {
         dateFilter = "AND t.created_at >= NOW() - INTERVAL '30 days'";
         prevDateFilter = "AND t.created_at BETWEEN NOW() - INTERVAL '60 days' AND NOW() - INTERVAL '30 days'";
         break;
-      case 'custom':
-        if (startDate && endDate) {
+      case 'custom': {
+        const isValidDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime());
+        if (isValidDate(startDate) && isValidDate(endDate)) {
           dateFilter = "AND t.created_at >= '" + startDate + "' AND t.created_at < ('" + endDate + "'::date + INTERVAL '1 day')";
-          const daysDiff = Math.round((new Date(endDate) - new Date(startDate)) / (1000*60*60*24));
+          const daysDiff = Math.max(0, Math.round((new Date(endDate) - new Date(startDate)) / (1000*60*60*24)));
           prevDateFilter = "AND t.created_at >= ('" + startDate + "'::date - INTERVAL '" + daysDiff + " days') AND t.created_at < '" + startDate + "'";
         } else {
           dateFilter = "AND DATE(t.created_at) = CURRENT_DATE";
           prevDateFilter = "AND DATE(t.created_at) = CURRENT_DATE - INTERVAL '1 day'";
         }
         break;
+      }
       default:
         dateFilter = "AND DATE(t.created_at) = CURRENT_DATE";
         prevDateFilter = "AND DATE(t.created_at) = CURRENT_DATE - INTERVAL '1 day'";
@@ -706,9 +708,19 @@ router.patch('/photographers/:id/password', async (req, res) => {
 router.get('/withdrawals', async (req, res) => {
   try {
     var status = req.query.status || 'all';
-    var where = status !== 'all' ? "WHERE w.status = '" + status + "'" : '';
+    var allowedStatuses = ['pending', 'approved', 'rejected'];
+    var where = '';
+    var params = [];
+    if (status !== 'all') {
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Statut invalide.' });
+      }
+      where = 'WHERE w.status = $1';
+      params.push(status);
+    }
     var result = await pool.query(
-      'SELECT w.*, p.studio_name, p.email, p.phone as photographer_phone, p.plan FROM withdrawals w JOIN photographers p ON p.id = w.photographer_id ' + where + ' ORDER BY w.requested_at DESC'
+      'SELECT w.*, p.studio_name, p.email, p.phone as photographer_phone, p.plan FROM withdrawals w JOIN photographers p ON p.id = w.photographer_id ' + where + ' ORDER BY w.requested_at DESC',
+      params
     );
     res.json({ withdrawals: result.rows });
   } catch (err) {
