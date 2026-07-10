@@ -758,6 +758,47 @@ router.put('/withdrawals/:id', async (req, res) => {
   }
 });
 
+// GET /api/admin/transactions - Liste complete de toutes les transactions
+// (reference, moyen de paiement, telephone du payeur, statut) - vue admin
+// uniquement, jamais exposee au photographe.
+router.get('/transactions', async (req, res) => {
+  var D = String.fromCharCode(36);
+  try {
+    var status = req.query.status || '';
+    var search = req.query.search || '';
+    var page = parseInt(req.query.page) || 1;
+    var limit = parseInt(req.query.limit) || 30;
+    var offset = (page - 1) * limit;
+    var conditions = [];
+    var params = [];
+    if (status) {
+      params.push(status);
+      conditions.push('t.status = ' + D + params.length);
+    }
+    if (search) {
+      params.push('%' + search + '%');
+      var idx = params.length;
+      conditions.push('(t.reference ILIKE ' + D + idx + ' OR e.name ILIKE ' + D + idx + ' OR p.studio_name ILIKE ' + D + idx + ')');
+    }
+    var whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    var countSql = 'SELECT COUNT(*) as total FROM transactions t LEFT JOIN events e ON e.id = t.event_id LEFT JOIN photographers p ON p.id = t.photographer_id ' + whereClause;
+    var countResult = await pool.query(countSql, params);
+    var limitIdx = params.length + 1;
+    var offsetIdx = params.length + 2;
+    var selectSql = 'SELECT t.id, t.reference, t.amount, t.payment_method, t.phone, t.status, t.created_at, t.completed_at, array_length(t.photos_purchased, 1) as photos_count, e.name as event_name, e.slug as event_slug, p.studio_name, p.email as photographer_email FROM transactions t LEFT JOIN events e ON e.id = t.event_id LEFT JOIN photographers p ON p.id = t.photographer_id ' + whereClause + ' ORDER BY t.created_at DESC LIMIT ' + D + limitIdx + ' OFFSET ' + D + offsetIdx;
+    var result = await pool.query(selectSql, [...params, limit, offset]);
+    res.json({
+      transactions: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      page: page,
+      totalPages: Math.ceil(parseInt(countResult.rows[0].total) / limit),
+    });
+  } catch (err) {
+    console.error('Erreur liste transactions admin:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;
 
 // GET /api/admin/events/expiring - Evenements proches de l'expiration

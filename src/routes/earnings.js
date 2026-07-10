@@ -178,7 +178,7 @@ router.get('/history', authMiddleware, async (req, res) => {
     var offsetParamIdx = limitParamIdx + 1;
 
     var result = await pool.query(
-      `SELECT t.id, t.amount, t.payment_method, t.status, t.created_at, t.phone,
+      `SELECT t.id, t.reference, t.amount, t.payment_method, t.status, t.created_at,
               e.name as event_name, e.slug as event_slug,
               array_length(t.photos_purchased, 1) as photos_count,
               t.photos_purchased as photo_ids
