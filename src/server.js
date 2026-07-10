@@ -49,7 +49,7 @@ const faceSearchLimiter = rateLimit({
 });
 
 // ===== PARSING =====
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 
 // Mode maintenance

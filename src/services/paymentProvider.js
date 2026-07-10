@@ -7,6 +7,12 @@ switch (activeProviderName) {
   case 'cinetpay':
     activeAdapter = require('./adapters/cinetPayAdapter');
     break;
+  case 'jeko':
+    activeAdapter = require('./adapters/jekoAdapter');
+    break;
+  case 'paydunya':
+    activeAdapter = require('./adapters/paydunyaAdapter');
+    break;
   case 'geniuspay':
     activeAdapter = require('./adapters/geniusPayAdapter');
     break;
