@@ -6,19 +6,19 @@ const router = express.Router();
 
 async function calculatePrice(photoCount) {
   try {
-    const result = await pool.query("SELECT key, value FROM app_settings WHERE key IN ('photo_price_1','photo_price_6','photo_price_10')");
+    const result = await pool.query("SELECT key, value FROM app_settings WHERE key IN ('photo_price_1','photo_price_3','photo_price_5')");
     const prices = {};
     result.rows.forEach(function(r) { prices[r.key] = parseInt(r.value); });
     const p1 = prices.photo_price_1 || 200;
-    const p6 = prices.photo_price_6 || 500;
-    const p10 = prices.photo_price_10 || 1000;
-    if (photoCount >= 11) return p10;
-    if (photoCount >= 6) return p6;
+    const p3 = prices.photo_price_3 || 500;
+    const p5 = prices.photo_price_5 || 1000;
+    if (photoCount >= 5) return p5;
+    if (photoCount >= 3) return p3;
     return photoCount * p1;
   } catch (err) {
     console.error('Erreur lecture tarifs:', err.message);
-    if (photoCount >= 11) return 1000;
-    if (photoCount >= 6) return 500;
+    if (photoCount >= 5) return 1000;
+    if (photoCount >= 3) return 500;
     return photoCount * 200;
   }
 }

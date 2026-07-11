@@ -246,14 +246,14 @@ router.get('/:id/download', async (req, res) => {
 router.get('/pricing', async (req, res) => {
   try {
     var result = await pool.query(
-      "SELECT key, value FROM app_settings WHERE key IN ('photo_price_1', 'photo_price_6', 'photo_price_10', 'watermark_text')"
+      "SELECT key, value FROM app_settings WHERE key IN ('photo_price_1', 'photo_price_3', 'photo_price_5', 'watermark_text')"
     );
     var pricing = {};
     result.rows.forEach(function(r) { pricing[r.key] = r.value; });
     res.json({
       price1: parseInt(pricing.photo_price_1) || 200,
-      price6: parseInt(pricing.photo_price_6) || 500,
-      price10: parseInt(pricing.photo_price_10) || 1000,
+      price3: parseInt(pricing.photo_price_3) || 500,
+      price5: parseInt(pricing.photo_price_5) || 1000,
       watermarkText: pricing.watermark_text || 'FOTOKASH',
     });
   } catch (err) {
