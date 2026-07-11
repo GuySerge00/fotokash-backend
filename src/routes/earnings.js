@@ -463,4 +463,18 @@ router.get('/export/excel', authMiddleware, async (req, res) => {
   }
 });
 
+// Marque l'onboarding photographe comme vu (n'affiche plus le tour guidé)
+router.post('/onboarding-seen', authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      'UPDATE photographers SET has_seen_onboarding = true WHERE id = $1',
+      [req.user.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Erreur onboarding-seen:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;
