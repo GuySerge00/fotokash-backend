@@ -3,6 +3,7 @@ const router = express.Router();
 const { pool } = require('../config/database');
 const isAdmin = require('../middleware/isAdmin');
 const { authMiddleware: auth } = require('../middleware/auth');
+const jekoPayout = require('../services/jekoPayout');
 
 // Toutes les routes admin nécessitent auth + admin
 router.use(auth);
@@ -733,25 +734,69 @@ router.get('/withdrawals', async (req, res) => {
 // PUT /api/admin/withdrawals/:id — Approuver/Rejeter un retrait
 // ============================================
 router.put('/withdrawals/:id', async (req, res) => {
+  var DOLLAR = String.fromCharCode(36);
   try {
     var { id } = req.params;
     var { status, admin_note } = req.body;
     if (!status || !['approved', 'rejected'].includes(status)) {
       return res.status(400).json({ error: 'Statut invalide. Utilisez approved ou rejected.' });
     }
-    var result = await pool.query(
-      'UPDATE withdrawals SET status = $1, admin_note = $2, processed_at = NOW() WHERE id = $3 AND status = $4 RETURNING *',
-      [status, admin_note || null, id, 'pending']
+
+    if (status === 'rejected') {
+      var rejectResult = await pool.query(
+        'UPDATE withdrawals SET status = ' + DOLLAR + '1, admin_note = ' + DOLLAR + '2, processed_at = NOW() WHERE id = ' + DOLLAR + '3 AND status = ' + DOLLAR + '4 RETURNING *',
+        [status, admin_note || null, id, 'pending']
+      );
+      if (rejectResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Demande introuvable ou deja traitee.' });
+      }
+      await pool.query(
+        'INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES (' + DOLLAR + '1, ' + DOLLAR + '2, ' + DOLLAR + '3, ' + DOLLAR + '4, ' + DOLLAR + '5, ' + DOLLAR + '6)',
+        ['reject_withdrawal', 'withdrawal', id, req.user.id, req.user.studio_name, JSON.stringify({ amount: rejectResult.rows[0].amount, phone: rejectResult.rows[0].phone, note: admin_note })]
+      );
+      return res.json({ message: 'Retrait rejete.', withdrawal: rejectResult.rows[0] });
+    }
+
+    // Approbation : declenche un vrai transfert Jeko avant de marquer approuve.
+    var lookup = await pool.query(
+      'SELECT w.*, p.studio_name FROM withdrawals w JOIN photographers p ON p.id = w.photographer_id WHERE w.id = ' + DOLLAR + '1 AND w.status = ' + DOLLAR + '2',
+      [id, 'pending']
     );
-    if (result.rows.length === 0) {
+    if (lookup.rows.length === 0) {
       return res.status(404).json({ error: 'Demande introuvable ou deja traitee.' });
     }
-    // Log admin
-    await pool.query(
-      "INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES ($1, $2, $3, $4, $5, $6)",
-      [status === 'approved' ? 'approve_withdrawal' : 'reject_withdrawal', 'withdrawal', id, req.user.id, req.user.studio_name, JSON.stringify({ amount: result.rows[0].amount, phone: result.rows[0].phone, note: admin_note })]
+    var w = lookup.rows[0];
+
+    if (!w.operator || w.net_amount == null) {
+      return res.status(400).json({ error: 'Cette demande ne contient pas d\'operateur/montant net (ancienne demande sans le nouveau format). Traitement manuel requis.' });
+    }
+
+    var transferId;
+    var contactId;
+    try {
+      contactId = await jekoPayout.getOrCreateContact(w.studio_name, w.operator, w.phone);
+      var transfer = await jekoPayout.initiateTransfer(contactId, parseFloat(w.net_amount));
+      transferId = transfer.id;
+    } catch (payoutErr) {
+      console.error('Erreur transfert Jeko payout:', payoutErr);
+      await pool.query(
+        'UPDATE withdrawals SET payout_error = ' + DOLLAR + '1 WHERE id = ' + DOLLAR + '2',
+        [payoutErr.message, id]
+      );
+      return res.status(502).json({ error: 'Echec du transfert Jeko : ' + payoutErr.message });
+    }
+
+    var result = await pool.query(
+      'UPDATE withdrawals SET status = ' + DOLLAR + '1, admin_note = ' + DOLLAR + '2, processed_at = NOW(), jeko_contact_id = ' + DOLLAR + '3, jeko_transfer_id = ' + DOLLAR + '4, payout_error = NULL WHERE id = ' + DOLLAR + '5 RETURNING *',
+      [status, admin_note || null, contactId, transferId, id]
     );
-    res.json({ message: 'Retrait ' + (status === 'approved' ? 'approuve' : 'rejete') + '.', withdrawal: result.rows[0] });
+
+    await pool.query(
+      'INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES (' + DOLLAR + '1, ' + DOLLAR + '2, ' + DOLLAR + '3, ' + DOLLAR + '4, ' + DOLLAR + '5, ' + DOLLAR + '6)',
+      ['approve_withdrawal', 'withdrawal', id, req.user.id, req.user.studio_name, JSON.stringify({ amount: result.rows[0].amount, net_amount: result.rows[0].net_amount, phone: result.rows[0].phone, jeko_transfer_id: transferId, note: admin_note })]
+    );
+
+    res.json({ message: 'Retrait approuve et transfere.', withdrawal: result.rows[0] });
   } catch (err) {
     console.error('Erreur update withdrawal:', err);
     res.status(500).json({ error: 'Erreur serveur.' });

@@ -280,10 +280,20 @@ router.post('/withdraw', authMiddleware, async (req, res) => {
 
     if (amount > available) return res.status(400).json({ error: 'Solde insuffisant. Disponible: ' + Math.floor(available) + ' FCFA.' });
 
-    var result = await pool.query(
-      'INSERT INTO withdrawals (photographer_id, amount, phone) VALUES ($1, $2, $3) RETURNING *',
-      [userId, amount, phone]
-    );
+    var operator = req.body.operator;
+    var validOperators = ['orange', 'mtn', 'wave', 'moov'];
+    if (!operator || validOperators.indexOf(operator) === -1) {
+      return res.status(400).json({ error: 'Operateur invalide. Choisissez orange, mtn, wave ou moov.' });
+    }
+
+    var feeRes = await pool.query("SELECT value FROM app_settings WHERE key = 'withdrawal_fee_percent'");
+    var feePercent = feeRes.rows[0] ? parseFloat(feeRes.rows[0].value) : 2;
+    var feeAmount = Math.round(amount * feePercent) / 100;
+    var netAmount = amount - feeAmount;
+
+    var DOLLAR = String.fromCharCode(36);
+    var insertSql = "INSERT INTO withdrawals (photographer_id, amount, phone, operator, fee_percent, fee_amount, net_amount) VALUES (" + DOLLAR + "1, " + DOLLAR + "2, " + DOLLAR + "3, " + DOLLAR + "4, " + DOLLAR + "5, " + DOLLAR + "6, " + DOLLAR + "7) RETURNING *";
+    var result = await pool.query(insertSql, [userId, amount, phone, operator, feePercent, feeAmount, netAmount]);
 
     res.status(201).json({ message: 'Demande de retrait envoyee.', withdrawal: result.rows[0] });
   } catch (err) {
