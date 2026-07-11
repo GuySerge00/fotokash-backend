@@ -737,7 +737,7 @@ router.put('/withdrawals/:id', async (req, res) => {
   var DOLLAR = String.fromCharCode(36);
   try {
     var { id } = req.params;
-    var { status, admin_note } = req.body;
+    var { status, admin_note, manual } = req.body;
     if (!status || !['approved', 'rejected'].includes(status)) {
       return res.status(400).json({ error: 'Statut invalide. Utilisez approved ou rejected.' });
     }
@@ -757,7 +757,24 @@ router.put('/withdrawals/:id', async (req, res) => {
       return res.json({ message: 'Retrait rejete.', withdrawal: rejectResult.rows[0] });
     }
 
-    // Approbation : declenche un vrai transfert Jeko avant de marquer approuve.
+    // Traitement manuel : le retrait a deja ete paye autrement (ex: appli
+    // Jeko directement) - on marque juste approuve, sans appel a l'API.
+    if (manual === true) {
+      var manualResult = await pool.query(
+        'UPDATE withdrawals SET status = ' + DOLLAR + '1, admin_note = ' + DOLLAR + '2, processed_at = NOW(), payout_error = NULL WHERE id = ' + DOLLAR + '3 AND status = ' + DOLLAR + '4 RETURNING *',
+        [status, admin_note || null, id, 'pending']
+      );
+      if (manualResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Demande introuvable ou deja traitee.' });
+      }
+      await pool.query(
+        'INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details) VALUES (' + DOLLAR + '1, ' + DOLLAR + '2, ' + DOLLAR + '3, ' + DOLLAR + '4, ' + DOLLAR + '5, ' + DOLLAR + '6)',
+        ['approve_withdrawal_manual', 'withdrawal', id, req.user.id, req.user.studio_name, JSON.stringify({ amount: manualResult.rows[0].amount, net_amount: manualResult.rows[0].net_amount, phone: manualResult.rows[0].phone, note: admin_note })]
+      );
+      return res.json({ message: 'Retrait marque comme traite manuellement.', withdrawal: manualResult.rows[0] });
+    }
+
+    // Approbation automatique : declenche un vrai transfert Jeko avant de marquer approuve.
     var lookup = await pool.query(
       'SELECT w.*, p.studio_name FROM withdrawals w JOIN photographers p ON p.id = w.photographer_id WHERE w.id = ' + DOLLAR + '1 AND w.status = ' + DOLLAR + '2',
       [id, 'pending']
