@@ -79,7 +79,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status, deleted_at FROM photographers WHERE email = $1',
+      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status, deleted_at, has_seen_onboarding FROM photographers WHERE email = $1',
       [email.toLowerCase()]
     );
 
