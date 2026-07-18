@@ -16,7 +16,7 @@ async function generateSitemap() {
     urls.push({ loc: SITE_URL + pg.path, lastmod: now, changefreq: pg.changefreq, priority: pg.priority });
   }
   try {
-    const r = await pool.query("SELECT slug, updated_at FROM events WHERE slug IS NOT NULL AND is_published = true ORDER BY updated_at DESC");
+    const r = await pool.query("SELECT slug, updated_at FROM events WHERE slug IS NOT NULL AND is_public = true AND deleted_at IS NULL ORDER BY updated_at DESC");
     for (const ev of r.rows) {
       urls.push({ loc: SITE_URL + '/e/' + ev.slug, lastmod: ev.updated_at ? new Date(ev.updated_at).toISOString().split('T')[0] : now, changefreq: 'weekly', priority: '0.7' });
     }
