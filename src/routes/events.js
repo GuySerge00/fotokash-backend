@@ -8,6 +8,33 @@ const http = require('http');
 const rateLimit = require('express-rate-limit');
 const router = express.Router();
 
+// GET /api/events/public — Annuaire public des événements actifs
+router.get('/public', async (req, res) => {
+  try {
+    const { search } = req.query;
+    const params = [];
+    let where = "WHERE e.is_public = true AND e.deleted_at IS NULL AND e.status = 'live'";
+
+    if (search && search.trim()) {
+      params.push('%' + search.trim() + '%');
+      where += " AND (e.name ILIKE $1 OR e.location ILIKE $1)";
+    }
+
+    const result = await pool.query(
+      "SELECT e.id, e.name, e.slug, e.date, e.location, e.cover_url, " +
+      "e.is_live, e.live_started_at, e.created_at, COUNT(p.id)::int AS photos_count " +
+      "FROM events e LEFT JOIN photos p ON p.event_id = e.id " +
+      where + " GROUP BY e.id " +
+      "ORDER BY e.is_live DESC, e.live_started_at DESC NULLS LAST, e.created_at DESC LIMIT 100",
+      params
+    );
+    res.json({ events: result.rows });
+  } catch (err) {
+    console.error('Erreur annuaire evenements public :', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 const ownerPinLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 heure
   max: 15, // 15 tentatives max par IP par heure
