@@ -175,4 +175,30 @@ router.put('/change-password', authMiddleware, async (req, res) => {
   }
 });
 
+
+// PUT /api/auth/profile — Mise a jour des informations personnelles
+router.put('/profile', authMiddleware, async (req, res) => {
+  try {
+    var studioName = (req.body.studio_name || '').trim();
+    var email = (req.body.email || '').trim().toLowerCase();
+    var phone = (req.body.phone || '').trim();
+    if (!studioName || !email) {
+      return res.status(400).json({ error: 'Nom du studio et email requis.' });
+    }
+    var existing = await pool.query('SELECT id FROM photographers WHERE email = $1 AND id != $2', [email, req.user.id]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Cet email est deja utilise.' });
+    }
+    var result = await pool.query(
+      `UPDATE photographers SET studio_name = $1, email = $2, phone = $3, updated_at = NOW()
+       WHERE id = $4
+       RETURNING id, studio_name, email, phone, plan, photo_limit, role, status`,
+      [studioName, email, phone || null, req.user.id]
+    );
+    res.json({ message: 'Profil mis a jour avec succes.', user: result.rows[0] });
+  } catch (err) {
+    console.error('Erreur mise a jour profil:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
 module.exports = router;
