@@ -725,6 +725,53 @@ router.delete('/photographers/:id', async (req, res) => {
 });
 
 // ============================================
+// POST /api/admin/photographers
+// Creer un compte photographe (par l'admin)
+// ============================================
+router.post('/photographers', async (req, res) => {
+  try {
+    var bcrypt = require('bcryptjs');
+    var studio_name = (req.body.studio_name || '').trim();
+    var email = (req.body.email || '').trim().toLowerCase();
+    var phone = (req.body.phone || '').trim();
+    var plan = req.body.plan || 'free';
+    if (!studio_name || !email) {
+      return res.status(400).json({ error: 'Nom du studio et email requis.' });
+    }
+    if (['free', 'pro', 'business'].indexOf(plan) === -1) {
+      return res.status(400).json({ error: 'Plan invalide.' });
+    }
+    var existing = await pool.query('SELECT id FROM photographers WHERE email = $1', [email]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Cet email est deja utilise.' });
+    }
+    var defaultPassword = 'FotoKash2026!';
+    var password_hash = await bcrypt.hash(defaultPassword, 12);
+
+    var planResult = await pool.query('SELECT photo_limit FROM subscription_plans WHERE id = $1', [plan]);
+    var photoLimit = planResult.rows[0] ? planResult.rows[0].photo_limit : 100;
+
+    var result = await pool.query(
+      `INSERT INTO photographers (studio_name, email, password_hash, phone, plan, photo_limit, status, role)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', 'photographer')
+       RETURNING id, studio_name, email, phone, plan, photo_limit, role, status, created_at`,
+      [studio_name, email, password_hash, phone || null, plan, photoLimit]
+    );
+
+    await pool.query(
+      `INSERT INTO admin_logs (action, entity_type, entity_id, actor_id, actor_name, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      ['photographer_created_by_admin', 'photographer', result.rows[0].id, req.user.id, req.user.studio_name, JSON.stringify({ email: email, plan: plan })]
+    );
+
+    res.json({ photographer: result.rows[0], defaultPassword: defaultPassword });
+  } catch (error) {
+    console.error('Erreur creation photographe:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ============================================
 // PATCH /api/admin/photographers/:id/password
 // Reinitialiser le mot de passe d'un photographe
 // ============================================
