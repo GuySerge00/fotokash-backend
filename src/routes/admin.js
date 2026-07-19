@@ -449,33 +449,41 @@ router.patch('/photographers/:id/plan', async (req, res) => {
 router.get('/commissions', async (req, res) => {
   try {
     const { period = '30d' } = req.query;
-
     let dateFilter = '';
+    let prevDateFilter = '';
     switch (period) {
-      case 'today': dateFilter = "AND DATE(t.created_at) = CURRENT_DATE"; break;
-      case '7d': dateFilter = "AND t.created_at >= NOW() - INTERVAL '7 days'"; break;
-      case '30d': dateFilter = "AND t.created_at >= NOW() - INTERVAL '30 days'"; break;
-      default: dateFilter = "AND t.created_at >= NOW() - INTERVAL '30 days'";
+      case 'today':
+        dateFilter = "AND DATE(t.created_at) = CURRENT_DATE";
+        prevDateFilter = "AND DATE(t.created_at) = CURRENT_DATE - INTERVAL '1 day'";
+        break;
+      case '7d':
+        dateFilter = "AND t.created_at >= NOW() - INTERVAL '7 days'";
+        prevDateFilter = "AND t.created_at >= NOW() - INTERVAL '14 days' AND t.created_at < NOW() - INTERVAL '7 days'";
+        break;
+      case '30d':
+        dateFilter = "AND t.created_at >= NOW() - INTERVAL '30 days'";
+        prevDateFilter = "AND t.created_at >= NOW() - INTERVAL '60 days' AND t.created_at < NOW() - INTERVAL '30 days'";
+        break;
+      default:
+        dateFilter = "AND t.created_at >= NOW() - INTERVAL '30 days'";
+        prevDateFilter = "AND t.created_at >= NOW() - INTERVAL '60 days' AND t.created_at < NOW() - INTERVAL '30 days'";
     }
-
     const result = await pool.query(`
-      SELECT 
-        p.plan,
+      SELECT
+        sp.id as plan,
         sp.commission_rate,
         COUNT(t.id) as total_sales,
         COALESCE(SUM(t.amount), 0) as total_revenue,
         COALESCE(SUM(t.amount * sp.commission_rate / 100), 0) as total_commission,
         COALESCE(SUM(t.amount - (t.amount * sp.commission_rate / 100)), 0) as photographer_revenue
-      FROM transactions t
-      JOIN photographers p ON t.photographer_id = p.id
-      JOIN subscription_plans sp ON p.plan = sp.id
-      WHERE t.status = 'completed' ${dateFilter}
-      GROUP BY p.plan, sp.commission_rate
+      FROM subscription_plans sp
+      LEFT JOIN photographers p ON p.plan = sp.id
+      LEFT JOIN transactions t ON t.photographer_id = p.id AND t.status = 'completed' ${dateFilter}
+      GROUP BY sp.id, sp.commission_rate
       ORDER BY total_revenue DESC
     `);
-
     const totals = await pool.query(`
-      SELECT 
+      SELECT
         COALESCE(SUM(t.amount), 0) as total_revenue,
         COALESCE(SUM(t.amount * sp.commission_rate / 100), 0) as total_commission
       FROM transactions t
@@ -483,14 +491,27 @@ router.get('/commissions', async (req, res) => {
       JOIN subscription_plans sp ON p.plan = sp.id
       WHERE t.status = 'completed' ${dateFilter}
     `);
-
+    const prevTotals = await pool.query(`
+      SELECT
+        COALESCE(SUM(t.amount), 0) as total_revenue,
+        COALESCE(SUM(t.amount * sp.commission_rate / 100), 0) as total_commission
+      FROM transactions t
+      JOIN photographers p ON t.photographer_id = p.id
+      JOIN subscription_plans sp ON p.plan = sp.id
+      WHERE t.status = 'completed' ${prevDateFilter}
+    `);
     const planDistribution = await pool.query(`
-      SELECT plan, COUNT(*) as count 
-      FROM photographers 
+      SELECT plan, COUNT(*) as count
+      FROM photographers
       WHERE role != 'admin' OR role IS NULL
       GROUP BY plan
     `);
-
+    const curRevenue = parseFloat(totals.rows[0]?.total_revenue || 0);
+    const curCommission = parseFloat(totals.rows[0]?.total_commission || 0);
+    const prevRevenue = parseFloat(prevTotals.rows[0]?.total_revenue || 0);
+    const prevCommission = parseFloat(prevTotals.rows[0]?.total_commission || 0);
+    const curMargin = curRevenue > 0 ? (curCommission / curRevenue) * 100 : 0;
+    const prevMargin = prevRevenue > 0 ? (prevCommission / prevRevenue) * 100 : 0;
     res.json({
       byPlan: result.rows.map(r => ({
         plan: r.plan,
@@ -501,8 +522,10 @@ router.get('/commissions', async (req, res) => {
         photographerRevenue: parseFloat(r.photographer_revenue),
       })),
       totals: {
-        revenue: parseFloat(totals.rows[0]?.total_revenue || 0),
-        commission: parseFloat(totals.rows[0]?.total_commission || 0),
+        revenue: curRevenue,
+        commission: curCommission,
+        margin: Math.round(curMargin * 100) / 100,
+        marginDelta: Math.round((curMargin - prevMargin) * 100) / 100,
       },
       planDistribution: planDistribution.rows.map(r => ({
         plan: r.plan || 'free',
@@ -521,35 +544,64 @@ router.get('/commissions', async (req, res) => {
 // ============================================
 router.get('/logs', async (req, res) => {
   try {
-    const { action = '', page = 1, limit = 30 } = req.query;
+    const { action = '', period = '', search = '', page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    let actionFilter = '';
-    let baseParams = [];
-    if (action) {
-      actionFilter = 'WHERE action = $1';
-      baseParams.push(action);
+    let conditions = [];
+    let params = [];
+    if (action) { params.push(action); conditions.push(`action = $${params.length}`); }
+    if (period === 'today') conditions.push("created_at >= CURRENT_DATE");
+    else if (period === '7d') conditions.push("created_at >= NOW() - INTERVAL '7 days'");
+    else if (period === '30d') conditions.push("created_at >= NOW() - INTERVAL '30 days'");
+    if (search) {
+      params.push('%' + search + '%');
+      const idx = params.length;
+      conditions.push(`(actor_name ILIKE $${idx} OR details::text ILIKE $${idx} OR CAST(entity_id AS TEXT) ILIKE $${idx})`);
     }
+    const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
-    const countResult = await pool.query(
-      `SELECT COUNT(*) as total FROM admin_logs ${actionFilter}`,
-      baseParams
-    );
+    const countResult = await pool.query(`SELECT COUNT(*) as total FROM admin_logs ${whereClause}`, params);
 
-    const limitParamIndex = baseParams.length + 1;
-    const offsetParamIndex = baseParams.length + 2;
+    const limitParamIndex = params.length + 1;
+    const offsetParamIndex = params.length + 2;
     const result = await pool.query(
-      `SELECT * FROM admin_logs ${actionFilter} ORDER BY created_at DESC LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
-      [...baseParams, parseInt(limit), offset]
+      `SELECT * FROM admin_logs ${whereClause} ORDER BY created_at DESC LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
+      [...params, parseInt(limit), offset]
     );
 
     const actions = await pool.query('SELECT DISTINCT action FROM admin_logs ORDER BY action');
+
+    let baseConditions = [];
+    let baseParams = [];
+    if (action) { baseParams.push(action); baseConditions.push(`action = $${baseParams.length}`); }
+    if (search) {
+      baseParams.push('%' + search + '%');
+      const idx = baseParams.length;
+      baseConditions.push(`(actor_name ILIKE $${idx} OR details::text ILIKE $${idx} OR CAST(entity_id AS TEXT) ILIKE $${idx})`);
+    }
+    const baseWhere = baseConditions.length ? 'WHERE ' + baseConditions.join(' AND ') : '';
+    const countsResult = await pool.query(
+      `SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as today,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') as last7,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') as last30
+       FROM admin_logs ${baseWhere}`,
+      baseParams
+    );
+
     res.json({
       logs: result.rows,
       total: parseInt(countResult.rows[0].total),
       page: parseInt(page),
       totalPages: Math.ceil(parseInt(countResult.rows[0].total) / parseInt(limit)),
       actions: actions.rows.map(a => a.action),
+      periodCounts: {
+        all: parseInt(countsResult.rows[0].total),
+        today: parseInt(countsResult.rows[0].today),
+        '7d': parseInt(countsResult.rows[0].last7),
+        '30d': parseInt(countsResult.rows[0].last30),
+      },
     });
   } catch (error) {
     console.error('Erreur logs:', error);
@@ -849,14 +901,87 @@ router.get('/transactions', async (req, res) => {
     var offsetIdx = params.length + 2;
     var selectSql = 'SELECT t.id, t.reference, t.amount, t.payment_method, t.phone, t.status, t.created_at, t.completed_at, array_length(t.photos_purchased, 1) as photos_count, e.name as event_name, e.slug as event_slug, p.studio_name, p.email as photographer_email FROM transactions t LEFT JOIN events e ON e.id = t.event_id LEFT JOIN photographers p ON p.id = t.photographer_id ' + whereClause + ' ORDER BY t.created_at DESC LIMIT ' + D + limitIdx + ' OFFSET ' + D + offsetIdx;
     var result = await pool.query(selectSql, [...params, limit, offset]);
+
+    var searchConditions = [];
+    var searchParams = [];
+    if (search) {
+      searchParams.push('%' + search + '%');
+      var sidx = searchParams.length;
+      searchConditions.push('(t.reference ILIKE ' + D + sidx + ' OR e.name ILIKE ' + D + sidx + ' OR p.studio_name ILIKE ' + D + sidx + ')');
+    }
+    var searchWhere = searchConditions.length ? 'WHERE ' + searchConditions.join(' AND ') : '';
+    var statsSql = 'SELECT ' +
+      'COUNT(*) as all_count, ' +
+      "COUNT(*) FILTER (WHERE t.status = 'completed') as completed_count, " +
+      "COUNT(*) FILTER (WHERE t.status = 'pending') as pending_count, " +
+      "COUNT(*) FILTER (WHERE t.status = 'failed') as failed_count, " +
+      'COALESCE(SUM(t.amount), 0) as total_volume ' +
+      'FROM transactions t LEFT JOIN events e ON e.id = t.event_id LEFT JOIN photographers p ON p.id = t.photographer_id ' + searchWhere;
+    var statsResult = await pool.query(statsSql, searchParams);
+    var stats = statsResult.rows[0];
+
     res.json({
       transactions: result.rows,
       total: parseInt(countResult.rows[0].total),
       page: page,
       totalPages: Math.ceil(parseInt(countResult.rows[0].total) / limit),
+      counts: {
+        all: parseInt(stats.all_count),
+        completed: parseInt(stats.completed_count),
+        pending: parseInt(stats.pending_count),
+        failed: parseInt(stats.failed_count),
+      },
+      totalVolume: parseFloat(stats.total_volume),
     });
   } catch (err) {
     console.error('Erreur liste transactions admin:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+router.get('/transactions/export/csv', async (req, res) => {
+  var D = String.fromCharCode(36);
+  try {
+    var status = req.query.status || '';
+    var search = req.query.search || '';
+    var conditions = [];
+    var params = [];
+    if (status) {
+      params.push(status);
+      conditions.push('t.status = ' + D + params.length);
+    }
+    if (search) {
+      params.push('%' + search + '%');
+      var idx = params.length;
+      conditions.push('(t.reference ILIKE ' + D + idx + ' OR e.name ILIKE ' + D + idx + ' OR p.studio_name ILIKE ' + D + idx + ')');
+    }
+    var whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    var selectSql = 'SELECT t.reference, t.created_at, p.studio_name, p.email as photographer_email, e.name as event_name, t.payment_method, t.phone, t.amount, t.status FROM transactions t LEFT JOIN events e ON e.id = t.event_id LEFT JOIN photographers p ON p.id = t.photographer_id ' + whereClause + ' ORDER BY t.created_at DESC';
+    var result = await pool.query(selectSql, params);
+
+    var statusLabels = { pending: 'En attente', completed: 'Completee', failed: 'Echouee' };
+    var lines = ['Reference;Date;Photographe;Email;Evenement;Moyen;Telephone;Montant;Statut'];
+    result.rows.forEach(function(t) {
+      var row = [
+        t.reference || '',
+        new Date(t.created_at).toLocaleString('fr-FR'),
+        t.studio_name || '',
+        t.photographer_email || '',
+        t.event_name || '',
+        t.payment_method || '',
+        t.phone || '',
+        t.amount,
+        statusLabels[t.status] || t.status,
+      ];
+      lines.push(row.join(';'));
+    });
+    var csv = lines.join('\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="fotokash-transactions.csv"');
+    res.send('\uFEFF' + csv);
+  } catch (err) {
+    console.error('Erreur export transactions:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
