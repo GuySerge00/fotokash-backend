@@ -5,6 +5,21 @@ const axios = require('axios');
 
 const router = express.Router();
 
+async function attachPurchaseStatus(eventId, photoRows) {
+  var photoIds = photoRows.map(function(r) { return r.id; });
+  if (photoIds.length === 0) return photoRows;
+  var purchasedMap = {};
+  var purchasedRes = await pool.query(
+    'SELECT t.id as transaction_id, u.photo_id FROM transactions t, unnest(t.photos_purchased) as u(photo_id) WHERE t.event_id = $1 AND t.status = $2 AND u.photo_id = ANY($3)',
+    [eventId, 'completed', photoIds]
+  );
+  purchasedRes.rows.forEach(function(row) { purchasedMap[row.photo_id] = row.transaction_id; });
+  return photoRows.map(function(r) {
+    var txId = purchasedMap[r.id];
+    return Object.assign({}, r, { purchased: !!txId, transaction_id: txId || null });
+  });
+}
+
 // GET /api/live/stats/global - Stats publiques pour landing page
 router.get('/stats/global', async (req, res) => {
   try {
@@ -119,7 +134,8 @@ router.post('/:slug/search', async (req, res) => {
     }
     await pool.query("UPDATE live_visitors SET matched_count = $1 WHERE id = $2", [matchResult.rows.length, visitor.id]);
 
-    res.json({ visitor_id: visitor.id, visitor_number: visitor.visitor_number, matches: matchResult.rows, total: matchResult.rows.length });
+    var enrichedMatches = await attachPurchaseStatus(event.id, matchResult.rows);
+    res.json({ visitor_id: visitor.id, visitor_number: visitor.visitor_number, matches: enrichedMatches, total: enrichedMatches.length });
   } catch (err) {
     console.error("Erreur live search:", err);
     res.status(500).json({ error: "Erreur serveur." });
@@ -154,7 +170,8 @@ router.post('/:slug/refresh', async (req, res) => {
     }
     await pool.query("UPDATE live_visitors SET matched_count = $1 WHERE id = $2", [matchResult.rows.length, visitor.id]);
 
-    res.json({ matches: matchResult.rows, total: matchResult.rows.length });
+    var enrichedRefresh = await attachPurchaseStatus(visitor.event_id, matchResult.rows);
+    res.json({ matches: enrichedRefresh, total: enrichedRefresh.length });
   } catch (err) {
     console.error("Erreur live refresh:", err);
     res.status(500).json({ error: "Erreur serveur." });
