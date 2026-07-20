@@ -225,7 +225,24 @@ router.post('/face-search', upload.single('selfie'), async (req, res) => {
     console.log('Face search threshold:', faceThreshold);
     var result = await pool.query('SELECT DISTINCT ' + photoFields + ', 1 - (fe.embedding <=> $1::vector) as similarity FROM face_embeddings fe JOIN photos p ON p.id = fe.photo_id WHERE fe.event_id = $2 AND p.deleted_at IS NULL AND 1 - (fe.embedding <=> $1::vector) > ' + faceThreshold + ' ORDER BY similarity DESC LIMIT 50', [embeddingStr, event_id]);
     console.log('Face search results:', result.rows.length, 'matches found');
-    res.json({ matched_photos: result.rows, count: result.rows.length });
+
+    var matchedPhotoIds = result.rows.map(function(r) { return r.id; });
+    var purchasedMap = {};
+    if (matchedPhotoIds.length > 0) {
+      var purchasedRes = await pool.query(
+        'SELECT t.id as transaction_id, u.photo_id FROM transactions t, unnest(t.photos_purchased) as u(photo_id) WHERE t.event_id = $1 AND t.status = $2 AND u.photo_id = ANY($3)',
+        [event_id, 'completed', matchedPhotoIds]
+      );
+      purchasedRes.rows.forEach(function(row) {
+        purchasedMap[row.photo_id] = row.transaction_id;
+      });
+    }
+    var matchedPhotos = result.rows.map(function(r) {
+      var txId = purchasedMap[r.id];
+      return Object.assign({}, r, { purchased: !!txId, transaction_id: txId || null });
+    });
+
+    res.json({ matched_photos: matchedPhotos, count: matchedPhotos.length });
   } catch (err) { console.error('Face search error:', err.message); res.status(500).json({ error: 'Erreur recherche.' }); }
 });
 
