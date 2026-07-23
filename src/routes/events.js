@@ -92,9 +92,33 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 // POST /api/events — Créer un événement (avec vérification limite du plan)
+async function validatePricingOverride(mode, unitRaw) {
+  if (mode === undefined || mode === null || mode === '') return { mode: null, unit: null };
+  const { VALID_MODES, loadPricingSettings } = require('../services/pricing');
+  if (VALID_MODES.indexOf(mode) === -1) {
+    return { error: 'Mode de tarification invalide.' };
+  }
+  let unit = null;
+  if (mode === 'fixed' || mode === 'degressive') {
+    unit = parseInt(unitRaw, 10);
+    if (!Number.isFinite(unit) || unit <= 0) {
+      return { error: 'Prix unitaire invalide.' };
+    }
+    const cfg = await loadPricingSettings();
+    if (unit < cfg.minBase) {
+      return { error: 'Le prix unitaire minimum autorise est de ' + cfg.minBase + ' FCFA.' };
+    }
+  }
+  return { mode, unit };
+}
+
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { name, date, description } = req.body;
+    const { name, date, description, pricing_mode, unit_price } = req.body;
+    const pricingCheck = await validatePricingOverride(pricing_mode, unit_price);
+    if (pricingCheck.error) {
+      return res.status(400).json({ error: pricingCheck.error });
+    }
 
     if (!name) {
       return res.status(400).json({ error: 'Le nom de l\'événement est requis.' });
@@ -122,10 +146,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const slug = generateSlug(name);
 
     const result = await pool.query(
-      `INSERT INTO events (photographer_id, name, slug, date, description, status, owner_pin)
-       VALUES ($1, $2, $3, $4, $5, 'live', $6)
+      `INSERT INTO events (photographer_id, name, slug, date, description, status, owner_pin, pricing_mode, unit_price)
+       VALUES ($1, $2, $3, $4, $5, 'live', $6, $7, $8)
        RETURNING *`,
-      [req.user.id, name, slug, date || null, description || null, generateOwnerPin()]
+      [req.user.id, name, slug, date || null, description || null, generateOwnerPin(), pricingCheck.mode, pricingCheck.unit]
     );
 
     res.status(201).json({
@@ -183,20 +207,45 @@ router.get('/:slug/public', async (req, res) => {
 // PUT /api/events/:id — Modifier un événement
 router.put('/:id', authMiddleware, ownsResource('event'), async (req, res) => {
   try {
-    const { name, date, description, status, is_public } = req.body;
+    const { name, date, description, status, is_public, pricing_mode, unit_price, clear_pricing_override } = req.body;
 
-    const result = await pool.query(
-      `UPDATE events
-       SET name = COALESCE($1, name),
-           date = COALESCE($2, date),
-           description = COALESCE($3, description),
-           status = COALESCE($4, status),
-           is_public = COALESCE($5, is_public),
-           updated_at = NOW()
-       WHERE id = $6
-       RETURNING *`,
-      [name, date, description, status, is_public, req.params.id]
-    );
+    const pricingCheck = await validatePricingOverride(pricing_mode, unit_price);
+    if (pricingCheck.error) {
+      return res.status(400).json({ error: pricingCheck.error });
+    }
+
+    let result;
+    if (clear_pricing_override) {
+      result = await pool.query(
+        `UPDATE events
+         SET name = COALESCE($1, name),
+             date = COALESCE($2, date),
+             description = COALESCE($3, description),
+             status = COALESCE($4, status),
+             is_public = COALESCE($5, is_public),
+             pricing_mode = NULL,
+             unit_price = NULL,
+             updated_at = NOW()
+         WHERE id = $6
+         RETURNING *`,
+        [name, date, description, status, is_public, req.params.id]
+      );
+    } else {
+      result = await pool.query(
+        `UPDATE events
+         SET name = COALESCE($1, name),
+             date = COALESCE($2, date),
+             description = COALESCE($3, description),
+             status = COALESCE($4, status),
+             is_public = COALESCE($5, is_public),
+             pricing_mode = COALESCE($6, pricing_mode),
+             unit_price = CASE WHEN $6 IS NOT NULL THEN $7 ELSE unit_price END,
+             updated_at = NOW()
+         WHERE id = $8
+         RETURNING *`,
+        [name, date, description, status, is_public, pricingCheck.mode, pricingCheck.unit, req.params.id]
+      );
+    }
 
     res.json({ event: result.rows[0] });
   } catch (err) {
