@@ -286,6 +286,7 @@ router.get('/photographers/:id', async (req, res) => {
       SELECT
         p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit,
         p.role, p.status, p.created_at, p.updated_at,
+        p.default_pricing_mode, p.default_unit_price,
         COALESCE((SELECT COUNT(*) FROM events e WHERE e.photographer_id = p.id AND e.deleted_at IS NULL), 0) as total_events,
         COALESCE((SELECT COUNT(*) FROM photos ph WHERE ph.photographer_id = p.id), 0) as total_photos,
         COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_revenue,
@@ -301,6 +302,7 @@ router.get('/photographers/:id', async (req, res) => {
 
     const eventsQuery = `
       SELECT e.id, e.name, e.slug, e.date, e.status, e.created_at,
+        e.pricing_mode, e.unit_price,
         (SELECT COUNT(*) FROM photos WHERE event_id = e.id) as photo_count,
         sp.event_retention_days,
         CASE WHEN sp.event_retention_days IS NOT NULL
@@ -325,6 +327,8 @@ router.get('/photographers/:id', async (req, res) => {
         phone: row.phone,
         plan: row.plan || 'free',
         photoLimit: row.photo_limit,
+        defaultPricingMode: row.default_pricing_mode || 'degressive',
+        defaultUnitPrice: row.default_unit_price,
         role: row.role,
         status: row.status || 'active',
         createdAt: row.created_at,
@@ -341,6 +345,8 @@ router.get('/photographers/:id', async (req, res) => {
         date: e.date,
         status: e.status,
         photoCount: parseInt(e.photo_count),
+        pricingMode: e.pricing_mode,
+        unitPrice: e.unit_price,
         createdAt: e.created_at,
         retentionDays: e.event_retention_days,
         daysRemaining: e.days_remaining ? parseInt(e.days_remaining) : null,
