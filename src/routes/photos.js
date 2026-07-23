@@ -267,13 +267,34 @@ router.get('/pricing', async (req, res) => {
     );
     var pricing = {};
     result.rows.forEach(function(r) { pricing[r.key] = r.value; });
+    var watermarkText = pricing.watermark_text || 'FOTOKASH';
+
+    var eventId = req.query.event_id;
+    if (!eventId) {
+      // Comportement inchange : pas d'event_id -> grille globale (compat clients existants).
+      return res.json({
+        price1: parseInt(pricing.photo_price_1) || 200,
+        price3: parseInt(pricing.photo_price_3) || 500,
+        price5: parseInt(pricing.photo_price_5) || 1000,
+        watermarkText: watermarkText,
+      });
+    }
+
+    // Prix reel de l'evenement (mode free/fixed/degressive custom pris en compte).
+    var { computePriceForEvent } = require('../services/pricing');
+    var r1 = await computePriceForEvent(eventId, 1);
+    var r3 = await computePriceForEvent(eventId, 3);
+    var r5 = await computePriceForEvent(eventId, 5);
     res.json({
-      price1: parseInt(pricing.photo_price_1) || 200,
-      price3: parseInt(pricing.photo_price_3) || 500,
-      price5: parseInt(pricing.photo_price_5) || 1000,
-      watermarkText: pricing.watermark_text || 'FOTOKASH',
+      price1: r1.amount,
+      price3: r3.amount,
+      price5: r5.amount,
+      mode: r1.mode,
+      isFree: r1.mode === 'free',
+      watermarkText: watermarkText,
     });
   } catch (err) {
+    console.error('Erreur /photos/pricing :', err.message);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
@@ -284,6 +305,15 @@ router.post('/free-download', async (req, res) => {
     var photoIds = req.body.photo_ids;
     if (!photoIds || !Array.isArray(photoIds) || photoIds.length === 0) {
       return res.status(400).json({ error: 'IDs photos requis.' });
+    }
+
+    // SECURITE : ne renvoyer les HD que si l'evenement est reellement gratuit (mode free => prix 0).
+    var { computePriceForEvent } = require('../services/pricing');
+    var evq = await pool.query('SELECT DISTINCT event_id FROM photos WHERE id = ANY($1) AND deleted_at IS NULL', [photoIds]);
+    if (evq.rows.length === 0) return res.status(404).json({ error: 'Photos introuvables.' });
+    for (var gi = 0; gi < evq.rows.length; gi++) {
+      var priced = await computePriceForEvent(evq.rows[gi].event_id, 1);
+      if (priced.amount !== 0) return res.status(403).json({ error: 'Telechargement gratuit non autorise pour cet evenement payant.' });
     }
 
     for (var i = 0; i < photoIds.length; i++) {
