@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../config/database');
 const paymentProvider = require('../services/paymentProvider');
+const { computePriceForEvent } = require('../services/pricing');
 
 const router = express.Router();
 
@@ -54,7 +55,8 @@ router.post('/initiate', async (req, res) => {
       [event_id]
     );
 
-    const amount = await calculatePrice(photo_ids.length);
+    const pricing = await computePriceForEvent(event_id, photo_ids.length);
+    const amount = pricing.amount;
     const providerName = paymentProvider.getActiveProviderName();
 
     const transaction = await pool.query(
