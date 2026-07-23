@@ -201,4 +201,58 @@ router.put('/profile', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
+
+// PUT /auth/pricing — Definir le mode et le prix de tarification par defaut du photographe.
+router.put('/pricing', authMiddleware, async (req, res) => {
+  try {
+    var { VALID_MODES, loadPricingSettings } = require('../services/pricing');
+    var mode = req.body.default_pricing_mode;
+    var unitRaw = req.body.default_unit_price;
+
+    if (VALID_MODES.indexOf(mode) === -1) {
+      return res.status(400).json({ error: 'Mode de tarification invalide.' });
+    }
+
+    var unit = null;
+    if (mode === 'fixed' || mode === 'degressive') {
+      unit = parseInt(unitRaw, 10);
+      if (!Number.isFinite(unit) || unit <= 0) {
+        return res.status(400).json({ error: 'Prix unitaire invalide.' });
+      }
+      var cfg = await loadPricingSettings();
+      if (unit < cfg.minBase) {
+        return res.status(400).json({ error: 'Le prix unitaire minimum autorise est de ' + cfg.minBase + ' FCFA.' });
+      }
+    }
+
+    var result = await pool.query(
+      `UPDATE photographers SET default_pricing_mode = $1, default_unit_price = $2, updated_at = NOW()
+       WHERE id = $3
+       RETURNING id, default_pricing_mode, default_unit_price`,
+      [mode, unit, req.user.id]
+    );
+    res.json({ message: 'Tarification mise a jour avec succes.', user: result.rows[0] });
+  } catch (err) {
+    console.error('Erreur mise a jour tarification:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /auth/pricing/preview?mode=..&unit_price=.. — Apercu du prix (1/3/5 photos) avant sauvegarde.
+router.get('/pricing/preview', authMiddleware, async (req, res) => {
+  try {
+    var { computePricePreview, VALID_MODES } = require('../services/pricing');
+    var mode = req.query.mode;
+    if (VALID_MODES.indexOf(mode) === -1) {
+      return res.status(400).json({ error: 'Mode de tarification invalide.' });
+    }
+    var unit = req.query.unit_price ? parseInt(req.query.unit_price, 10) : null;
+    var preview = await computePricePreview(mode, unit);
+    res.json(preview);
+  } catch (err) {
+    console.error('Erreur apercu tarification:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;
