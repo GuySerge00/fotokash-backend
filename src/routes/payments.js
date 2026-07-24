@@ -121,19 +121,46 @@ router.post('/callback', async (req, res) => {
       [providerTransactionId || '']
     );
 
-    if (tx.rows.length === 0) {
+    if (tx.rows.length > 0) {
+      if (tx.rows[0].status !== 'pending') {
+        console.log('Webhook ignore : transaction ' + tx.rows[0].id + ' deja au statut ' + tx.rows[0].status);
+        return res.json({ message: 'Callback deja traite.' });
+      }
+      await pool.query(
+        "UPDATE transactions SET status = $1, completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE NULL END WHERE id = $2 AND status = 'pending'",
+        [newStatus, tx.rows[0].id, newStatus]
+      );
+      return res.json({ message: 'Callback traite.' });
+    }
+
+    // Pas trouve dans transactions -> tenter subscription_payments (upgrade de plan photographe).
+    const sub = await pool.query(
+      'SELECT id, photographer_id, plan_id, status FROM subscription_payments WHERE reference = $1',
+      [providerTransactionId || '']
+    );
+
+    if (sub.rows.length === 0) {
       return res.status(404).json({ error: 'Transaction introuvable.' });
     }
 
-    if (tx.rows[0].status !== 'pending') {
-      console.log('Webhook ignore : transaction ' + tx.rows[0].id + ' deja au statut ' + tx.rows[0].status);
+    if (sub.rows[0].status !== 'pending') {
+      console.log('Webhook ignore : paiement abonnement ' + sub.rows[0].id + ' deja au statut ' + sub.rows[0].status);
       return res.json({ message: 'Callback deja traite.' });
     }
 
     await pool.query(
-      "UPDATE transactions SET status = $1, completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE NULL END WHERE id = $2 AND status = 'pending'",
-      [newStatus, tx.rows[0].id, newStatus]
+      "UPDATE subscription_payments SET status = $1, completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE NULL END WHERE id = $2 AND status = 'pending'",
+      [newStatus, sub.rows[0].id, newStatus]
     );
+
+    if (newStatus === 'completed') {
+      const planData = await pool.query('SELECT photo_limit FROM subscription_plans WHERE id = $1', [sub.rows[0].plan_id]);
+      await pool.query(
+        "UPDATE photographers SET plan = $1, photo_limit = $2, plan_expires_at = NOW() + INTERVAL '30 days', updated_at = NOW() WHERE id = $3",
+        [sub.rows[0].plan_id, planData.rows[0] ? planData.rows[0].photo_limit : null, sub.rows[0].photographer_id]
+      );
+      console.log('[SUBSCRIPTION] Photographe ' + sub.rows[0].photographer_id + ' passe au plan ' + sub.rows[0].plan_id + ' (expire dans 30 jours)');
+    }
 
     res.json({ message: 'Callback traite.' });
   } catch (err) {
