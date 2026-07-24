@@ -13,6 +13,7 @@ const adminRoutes = require('./routes/admin');
 const earningsRoutes = require('./routes/earnings');
 const liveRoutes = require('./routes/live');
 const { startEventCleanupJob } = require("./jobs/eventCleanup");
+const { startPlanExpirationJob } = require("./jobs/planExpiration");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -78,6 +79,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/live', liveRoutes);
 app.use('/api/earnings', earningsRoutes);
+app.use('/api/subscriptions', require('./routes/subscriptions'));
 app.use('/api/seo', require('./routes/seo'));
 
 // ===== ROUTE DE SANTÉ =====
@@ -118,6 +120,7 @@ app.use((req, res) => {
 console.log('ENV VARS:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('PG') || k.includes('NODE')));
 // ===== CRON JOBS =====
 startEventCleanupJob();
+startPlanExpirationJob();
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`
   ╔═══════════════════════════════════════════╗
