@@ -79,7 +79,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status, deleted_at, has_seen_onboarding FROM photographers WHERE email = $1',
+      'SELECT id, studio_name, email, password_hash, plan, photo_limit, role, status, deleted_at, has_seen_onboarding, must_change_password FROM photographers WHERE email = $1',
       [email.toLowerCase()]
     );
 
@@ -122,7 +122,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit, p.role, p.status, p.created_at, p.has_seen_onboarding, p.plan_expires_at,
+      `SELECT p.id, p.studio_name, p.email, p.phone, p.plan, p.photo_limit, p.role, p.status, p.created_at, p.has_seen_onboarding, p.plan_expires_at, p.must_change_password,
               COALESCE((SELECT COUNT(*) FROM photos ph WHERE ph.photographer_id = p.id), 0) as total_photos,
               COALESCE((SELECT COUNT(*) FROM events e WHERE e.photographer_id = p.id), 0) as total_events,
               COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.photographer_id = p.id AND t.status = 'completed'), 0) as total_revenue
@@ -167,7 +167,7 @@ router.put('/change-password', authMiddleware, async (req, res) => {
       return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
     }
     var newHash = await bcrypt.hash(newPassword, 12);
-    await pool.query('UPDATE photographers SET password_hash = $1, updated_at = NOW() WHERE id = $2', [newHash, req.user.id]);
+    await pool.query('UPDATE photographers SET password_hash = $1, must_change_password = false, updated_at = NOW() WHERE id = $2', [newHash, req.user.id]);
     res.json({ message: 'Mot de passe modifie avec succes !' });
   } catch (err) {
     console.error('Erreur changement mot de passe:', err);

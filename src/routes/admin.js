@@ -751,15 +751,15 @@ router.post('/photographers', async (req, res) => {
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Cet email est deja utilise.' });
     }
-    var defaultPassword = 'FotoKash2026!';
+    var defaultPassword = process.env.ADMIN_DEFAULT_PASSWORD;
     var password_hash = await bcrypt.hash(defaultPassword, 12);
 
     var planResult = await pool.query('SELECT photo_limit FROM subscription_plans WHERE id = $1', [plan]);
     var photoLimit = planResult.rows[0] ? planResult.rows[0].photo_limit : 100;
 
     var result = await pool.query(
-      `INSERT INTO photographers (studio_name, email, password_hash, phone, plan, photo_limit, status, role)
-       VALUES ($1, $2, $3, $4, $5, $6, 'active', 'photographer')
+      `INSERT INTO photographers (studio_name, email, password_hash, phone, plan, photo_limit, status, role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', 'photographer', true)
        RETURNING id, studio_name, email, phone, plan, photo_limit, role, status, created_at`,
       [studio_name, email, password_hash, phone || null, plan, photoLimit]
     );
@@ -785,10 +785,10 @@ router.patch('/photographers/:id/password', async (req, res) => {
   try {
     var id = req.params.id;
     var bcrypt = require('bcryptjs');
-    var defaultPassword = 'FotoKash2026!';
+    var defaultPassword = process.env.ADMIN_DEFAULT_PASSWORD;
     var hash = await bcrypt.hash(defaultPassword, 12);
     var result = await pool.query(
-      'UPDATE photographers SET password_hash = $1, updated_at = NOW() WHERE id = $2 AND (role != $3 OR role IS NULL) RETURNING id, studio_name, email',
+      'UPDATE photographers SET password_hash = $1, must_change_password = true, updated_at = NOW() WHERE id = $2 AND (role != $3 OR role IS NULL) RETURNING id, studio_name, email',
       [hash, id, 'admin']
     );
     if (result.rows.length === 0) {
