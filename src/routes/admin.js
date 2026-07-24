@@ -422,7 +422,7 @@ router.patch('/photographers/:id/plan', async (req, res) => {
 
     const planData = planCheck.rows[0];
     const result = await pool.query(
-      'UPDATE photographers SET plan = $1, photo_limit = $2, updated_at = NOW() WHERE id = $3 RETURNING id, studio_name, email, plan, photo_limit',
+      'UPDATE photographers SET plan = $1, photo_limit = $2, plan_expires_at = NULL, updated_at = NOW() WHERE id = $3 RETURNING id, studio_name, email, plan, photo_limit, plan_expires_at',
       [plan, planData.photo_limit, id]
     );
 
